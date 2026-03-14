@@ -1,0 +1,35 @@
+{
+  "name": "agent-zero-dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/a0",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/a0,type=bind",
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  "forwardPorts": [80, 5678, 9000, 9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009],
+  "remoteUser": "root",
+  "overrideCommand": true,
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv-a0/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": [
+          "tests"
+        ],
+        "python.analysis.typeCheckingMode": "standard",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.debugpy",
+        "ms-python.vscode-pylance",
+        "usernamehw.errorlens"
+      ]
+    }
+  }
+}
