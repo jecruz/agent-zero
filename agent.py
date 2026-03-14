@@ -375,6 +375,7 @@ class Agent:
         self.last_user_message: history.Message | None = None
         self.intervention: UserMessage | None = None
         self.data: dict[str, Any] = {}  # free data object all the tools can use
+        self.stream_metrics = {}
 
         extension.call_extensions_sync("agent_init", self)
 

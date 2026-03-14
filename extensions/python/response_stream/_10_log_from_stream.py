@@ -1,11 +1,11 @@
-from helpers import persist_chat, tokens
-from helpers.extension import Extension
+from python.helpers import persist_chat, tokens
+from python.helpers.extension import Extension
 from agent import LoopData
 import asyncio
-from helpers.log import LogItem
-from helpers import log
+from python.helpers.log import LogItem
+from python.helpers import log
 import math
-from extensions.python.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
+from python.extensions.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
 
 
 class LogFromStream(Extension):
@@ -43,11 +43,18 @@ class LogFromStream(Extension):
 
         # update log message
         log_item = loop_data.params_temporary["log_item_generating"]
+        metrics = loop_data.params_temporary.get("stream_metrics") or {}
 
-        # keep reasoning from previous logs in kvps
+        # keep stream metrics and reasoning from previous updates when replacing kvps
         kvps = {}
-        if log_item.kvps is not None and "reasoning" in log_item.kvps:
-            kvps["reasoning"] = log_item.kvps["reasoning"]
+        if log_item.kvps is not None:
+            for key in ("reasoning", "output_tokens", "tokens_per_second"):
+                if key in log_item.kvps:
+                    kvps[key] = log_item.kvps[key]
+        if "output_tokens" in metrics:
+            kvps["output_tokens"] = metrics["output_tokens"]
+        if "tokens_per_second" in metrics:
+            kvps["tokens_per_second"] = round(metrics["tokens_per_second"], 1)
         
         # step description for UI - using tool XY, writing Python code, etc.
         if parsed is not None and "tool_name" in parsed and parsed["tool_name"]:

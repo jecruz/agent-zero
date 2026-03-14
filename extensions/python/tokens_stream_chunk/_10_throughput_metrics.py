@@ -1,5 +1,5 @@
 import time
-from helpers.extension import Extension
+from python.helpers.extension import Extension
 
 class ThroughputMetrics(Extension):
     """

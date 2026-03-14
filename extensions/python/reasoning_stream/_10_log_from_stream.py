@@ -1,11 +1,11 @@
-from helpers import persist_chat, tokens
-from helpers.extension import Extension
+from python.helpers import persist_chat, tokens
+from python.helpers.extension import Extension
 from agent import LoopData
 import asyncio
-from helpers.log import LogItem
-from helpers import log
+from python.helpers.log import LogItem
+from python.helpers import log
 import math
-from extensions.python.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
+from python.extensions.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
 
 class LogFromStream(Extension):
 
@@ -31,4 +31,10 @@ class LogFromStream(Extension):
 
         # update log message
         log_item = loop_data.params_temporary["log_item_generating"]
-        log_item.update(heading=heading, reasoning=text, step=step)
+        metrics = loop_data.params_temporary.get("stream_metrics") or {}
+        kvps = dict(log_item.kvps or {})
+        if "output_tokens" in metrics:
+            kvps["output_tokens"] = metrics["output_tokens"]
+        if "tokens_per_second" in metrics:
+            kvps["tokens_per_second"] = round(metrics["tokens_per_second"], 1)
+        log_item.update(heading=heading, reasoning=text, step=step, kvps=kvps)
