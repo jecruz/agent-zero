@@ -1,4 +1,4 @@
-import asyncio, random, string, threading, time
+import asyncio, random, string, threading
 import nest_asyncio
 
 nest_asyncio.apply()
@@ -452,43 +452,19 @@ class Agent:
                             # Use the potentially modified full text for downstream processing
                             await self.handle_response_stream(stream_data["full"])
 
-                        stream_metrics = {
-                            "started_at": None,
-                            "output_tokens": 0,
-                            "tokens_per_second": 0.0,
-                        }
-
-                        async def tokens_callback(_chunk: str, token_count: int):
+                        async def tokens_callback(chunk: str, token_count: int):
                             await self.handle_intervention()
                             if token_count <= 0:
                                 return
 
-                            if stream_metrics["started_at"] is None:
-                                stream_metrics["started_at"] = time.monotonic()
-
-                            stream_metrics["output_tokens"] += token_count
-                            elapsed = max(
-                                time.monotonic() - stream_metrics["started_at"], 1e-3
+                            # call tokens_stream_chunk extensions
+                            await extension.call_extensions_async(
+                                "tokens_stream_chunk",
+                                self,
+                                loop_data=self.loop_data,
+                                chunk=chunk,
+                                token_count=token_count,
                             )
-                            stream_metrics["tokens_per_second"] = (
-                                stream_metrics["output_tokens"] / elapsed
-                            )
-                            self.loop_data.params_temporary["stream_metrics"] = dict(
-                                stream_metrics
-                            )
-
-                            log_item = self.loop_data.params_temporary.get(
-                                "log_item_generating"
-                            )
-                            if not log_item:
-                                return
-
-                            kvps = dict(log_item.kvps or {})
-                            kvps["output_tokens"] = stream_metrics["output_tokens"]
-                            kvps["tokens_per_second"] = round(
-                                stream_metrics["tokens_per_second"], 1
-                            )
-                            log_item.update(kvps=kvps)
 
                         # call main LLM
                         agent_response, _reasoning = await self.call_chat_model(
@@ -498,21 +474,6 @@ class Agent:
                             tokens_callback=tokens_callback,
                         )
                         await self.handle_intervention(agent_response)
-
-                        log_item = self.loop_data.params_temporary.get(
-                            "log_item_generating"
-                        )
-                        if (
-                            log_item
-                            and stream_metrics["started_at"] is not None
-                            and stream_metrics["output_tokens"] > 0
-                        ):
-                            kvps = dict(log_item.kvps or {})
-                            kvps["output_tokens"] = stream_metrics["output_tokens"]
-                            kvps["tokens_per_second"] = round(
-                                stream_metrics["tokens_per_second"], 1
-                            )
-                            log_item.update(kvps=kvps)
 
                         # Notify extensions to finalize their stream filters
                         await extension.call_extensions_async(
