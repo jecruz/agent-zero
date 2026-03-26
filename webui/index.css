@@ -85,6 +85,10 @@
   --font-family-main: "Rubik", Arial, Helvetica, sans-serif;
   --font-family-code: "Roboto Mono", monospace;
 
+  /* Font customization defaults (can be overridden by user preferences) */
+  --font-size-custom: 14px;
+  --color-text-custom: #ffffff;
+
   /* Other variables */
   --border-radius: 1.125rem;
   --border-radius-sm: 0.5rem;
@@ -122,6 +126,7 @@ html {
   background-color: var(--color-background);
   color: var(--color-text);
   font-family: var(--font-family-main);
+  font-size: var(--font-size-custom);
   width: 100%;
   height: 100%;
   min-width: 320px !important;
@@ -137,19 +142,6 @@ html {
 body {
   overscroll-behavior: none;
   -webkit-overscroll-behavior: none;
-}
-
-x-extension:not(:empty) {
-  display: contents;
-}
-
-x-extension:empty {
-  display: none;
-}
-
-x-extension > x-component,
-x-extension > x-component > div[x-data] {
-  display: contents;
 }
 
 p:last-child {
@@ -1022,10 +1014,6 @@ input:checked + .slider:before {
 /* Media Queries */
 @media (max-width: 640px) {
   /* Responsive tiles for mobile */
-  #time-date {
-    display: none;
-  }
-
   .preview-section {
     grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
     gap: 8px;

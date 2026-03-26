@@ -735,19 +735,6 @@
   opacity: 0;
 }
 
-/* ALL detail mode: force full response bodies and hide the expand control */
-#chat-history[data-detail-mode="expanded"] .message.message-collapsible .message-body {
-  max-height: none !important;
-}
-
-#chat-history[data-detail-mode="expanded"] .message.message-collapsible .message-body::after {
-  opacity: 0;
-}
-
-#chat-history[data-detail-mode="expanded"] .message.message-collapsible .expand-btn {
-  display: none !important;
-}
-
 /* Smooth Render */
 .smooth-render-visible,
 .smooth-render-invisible {
@@ -784,4 +771,37 @@
   to {
     opacity: 0;
   }
+}
+
+/* ===========================================
+   Font Customization - Uses CSS variables
+   =========================================== */
+
+/* Apply custom font size to all message text */
+.message-user .message-text pre,
+.message-default .message-body,
+.message-agent .message-body,
+.message-agent-response .message-body,
+.message-tool .message-body,
+.message-code-exe .msg-content pre,
+.message-body,
+.message-body pre {
+  font-size: var(--font-size-custom) !important;
+  color: var(--color-text-custom) !important;
+}
+
+/* Apply custom font family */
+.message-user .message-text pre,
+.message-default .message-body,
+.message-agent .message-body,
+.message-agent-response .message-body,
+.message-tool .message-body,
+.message-body,
+.message-body pre {
+  font-family: var(--font-family-main) !important;
+}
+
+/* Code blocks keep their own font */
+.message-code-exe .msg-content pre {
+  font-family: var(--font-family-code) !important;
 }

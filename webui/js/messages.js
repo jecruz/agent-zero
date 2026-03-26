@@ -4,6 +4,7 @@ import { marked } from "../vendor/marked/marked.esm.js";
 import { store as _messageResizeStore } from "/components/messages/resize/message-resize-store.js"; // keep here, required in html
 import { store as attachmentsStore } from "/components/chat/attachments/attachmentsStore.js";
 import { store as speechStore } from "/components/chat/speech/speech-store.js";
+import { store as inputStore } from "/components/chat/input/input-store.js";
 import {
   createActionButton,
   copyToClipboard,
@@ -94,6 +95,8 @@ export async function getMessageHandler(type) {
       return drawMessageResponse;
     case "tool":
       return drawMessageTool;
+    case "browser":
+      return drawMessageBrowser;
     case "progress":
       return drawMessageProgress;
     case "mcp":
@@ -1104,6 +1107,17 @@ export function drawMessageUser({
     ? [
         createActionButton("speak", "", () => speechStore.speak(userText)),
         createActionButton("copy", "", () => copyToClipboard(userText)),
+        createActionButton("resubmit", "", () => {
+          // Set the message in input store and trigger send
+          inputStore.message = userText;
+          inputStore._addToHistory(userText);
+          // Focus and trigger send
+          const chatInput = document.getElementById("chat-input");
+          if (chatInput) {
+            chatInput.focus();
+            globalThis.sendMessage?.();
+          }
+        }),
       ].filter(Boolean)
     : [];
   const actionButtonsContainer = ensureChild(
@@ -1122,9 +1136,9 @@ export function drawMessageUser({
 
 /**
  * @param {MessageHandlerArgs & Record<string, any>} param0
- * @returns {Promise<MessageHandlerResult>}
+ * @returns {MessageHandlerResult}
  */
-export async function drawMessageTool({
+export function drawMessageTool({
   id,
   type,
   heading,
@@ -1139,28 +1153,18 @@ export async function drawMessageTool({
   if (!tool_name) {
     return drawMessageToolSimple({ ...arguments[0] });
   } else if (kvps._tool_name === "skills_tool") {
-    const displayKvps = { ...(kvps || {}) };
-    delete displayKvps._tool_name;
-    return drawMessageToolSimple({ ...arguments[0], code: "SKL", displayKvps });
+    return drawMessageToolSimple({ ...arguments[0], code: "SKL" });
   } else if (kvps._tool_name === "vision_load") {
     return drawMessageToolSimple({ ...arguments[0], code: "EYE" });
   } else if (kvps._tool_name === "search_engine") {
     return drawMessageToolSimple({ ...arguments[0], code: "WEB" });
+  } else if (kvps._tool_name === "browser_agent") {
+    return drawMessageToolSimple({ ...arguments[0], code: "WWW" });
   } else if (kvps._tool_name.startsWith("memory_")) {
     return drawMessageToolSimple({ ...arguments[0], code: "MEM" });
+  } else {
+    return drawMessageToolSimple({ ...arguments[0] });
   }
-
-  /** @type {{ tool_name: string, kvps: any, handler: Function | undefined }} */
-  const extData = {
-    tool_name,
-    kvps,
-    handler: undefined,
-  };
-  await callJsExtensions("get_tool_message_handler", extData);
-  if (typeof extData.handler === "function") {
-    return extData.handler(arguments[0]);
-  }
-  return drawMessageToolSimple({ ...arguments[0] });
 }
 
 /**
@@ -1201,6 +1205,48 @@ export function drawMessageToolSimple({
     id,
     title,
     code: code || "USE",
+    classes: undefined,
+    kvps: displayKvps,
+    content,
+    // contentClasses: [],
+    actionButtons,
+    log: arguments[0],
+  });
+}
+
+/**
+ * @param {MessageHandlerArgs & Record<string, any>} param0
+ * @returns {MessageHandlerResult}
+ */
+export function drawMessageBrowser({
+  id,
+  type,
+  heading,
+  content,
+  kvps,
+  timestamp,
+  agentno = 0,
+  ...additional
+}) {
+  const title = cleanStepTitle(heading);
+  let displayKvps = { ...kvps };
+  const answerText = String(kvps?.answer ?? "");
+  const actionButtons = answerText.trim()
+    ? [
+        createActionButton("detail", "", () =>
+          stepDetailStore.showStepDetail(
+            buildDetailPayload(arguments[0], { headerLabels: [] }),
+          ),
+        ),
+        createActionButton("speak", "", () => speechStore.speak(answerText)),
+        createActionButton("copy", "", () => copyToClipboard(answerText)),
+      ].filter(Boolean)
+    : [];
+
+  return drawProcessStep({
+    id,
+    title,
+    code: "WWW",
     classes: undefined,
     kvps: displayKvps,
     content,

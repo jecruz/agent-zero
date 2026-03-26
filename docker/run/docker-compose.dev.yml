@@ -1,12 +1,16 @@
 services:
   agent-zero:
-    container_name: agent-zero
+    container_name: agent-zero-dev
     image: agent-zero:dev
     volumes:
+      # Bind local directories for durable configuration
       - ./agent-zero/usr:/a0/usr
       - ./agent-zero/conf:/a0/conf
+      # Optional: mount agent-zero codebase for live development
+      - ./agent-zero/code:/a0/code
     ports:
-      - "50011:80"
+      - "50080:80"
+      - "56789:5678"  # Debug port if enabled
     # Allow container to reach host services via host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"

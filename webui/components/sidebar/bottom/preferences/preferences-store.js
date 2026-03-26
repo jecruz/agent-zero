@@ -78,6 +78,42 @@ const model = {
     { label: "ALL", value: "expanded", title: "All expanded" },
   ],
 
+  // Font customization
+  get fontFamily() {
+    return this._fontFamily;
+  },
+  set fontFamily(value) {
+    this._fontFamily = value;
+    this._applyFontFamily(value);
+  },
+  _fontFamily: "Rubik",
+
+  // Font family options
+  fontFamilyOptions: [
+    { label: "Rubik (Default)", value: "Rubik" },
+    { label: "Roboto Mono", value: "Roboto Mono" },
+    { label: "System", value: "system-ui" },
+    { label: "Monospace", value: "monospace" },
+  ],
+
+  get fontSize() {
+    return this._fontSize;
+  },
+  set fontSize(value) {
+    this._fontSize = value;
+    this._applyFontSize(value);
+  },
+  _fontSize: "14", // Default size in px
+
+  get fontColor() {
+    return this._fontColor;
+  },
+  set fontColor(value) {
+    this._fontColor = value;
+    this._applyFontColor(value);
+  },
+  _fontColor: "#ffffff", // Default white
+
   // Initialize preferences and apply current state
   init() {
     try {
@@ -124,6 +160,37 @@ const model = {
         this._showUtils = false; // Default to speech off if localStorage is unavailable
       }
 
+      // Load font preferences
+      try {
+        const storedFontFamily = localStorage.getItem("fontFamily");
+        if (storedFontFamily && this.fontFamilyOptions.some(opt => opt.value === storedFontFamily)) {
+          this._fontFamily = storedFontFamily;
+        }
+      } catch {
+        this._fontFamily = "Rubik"; // Default
+      }
+
+      try {
+        const storedFontSize = localStorage.getItem("fontSize");
+        if (storedFontSize) {
+          const size = parseInt(storedFontSize, 10);
+          if (size >= 12 && size <= 20) {
+            this._fontSize = storedFontSize;
+          }
+        }
+      } catch {
+        this._fontSize = "14"; // Default
+      }
+
+      try {
+        const storedFontColor = localStorage.getItem("fontColor");
+        if (storedFontColor && /^#[0-9A-Fa-f]{6}$/.test(storedFontColor)) {
+          this._fontColor = storedFontColor;
+        }
+      } catch {
+        this._fontColor = "#ffffff"; // Default white
+      }
+
       // Apply all preferences
       this._applyDarkMode(this._darkMode);
       this._applyAutoScroll(this._autoScroll);
@@ -131,6 +198,9 @@ const model = {
       this._applyShowUtils(this._showUtils);
       this._applyChatWidth(this._chatWidth);
       this._applyDetailMode(this._detailMode);
+      this._applyFontFamily(this._fontFamily);
+      this._applyFontSize(this._fontSize);
+      this._applyFontColor(this._fontColor);
     } catch (e) {
       console.error("Failed to initialize preferences store", e);
     }
@@ -181,6 +251,24 @@ const model = {
     localStorage.setItem("detailMode", value);
     // Apply mode to all existing DOM elements
     applyModeSteps(this._detailMode, this._showUtils);
+  },
+
+  _applyFontFamily(value) {
+    localStorage.setItem("fontFamily", value);
+    const root = document.documentElement;
+    root.style.setProperty("--font-family-main", value);
+  },
+
+  _applyFontSize(value) {
+    localStorage.setItem("fontSize", value);
+    const root = document.documentElement;
+    root.style.setProperty("--font-size-custom", `${value}px`);
+  },
+
+  _applyFontColor(value) {
+    localStorage.setItem("fontColor", value);
+    const root = document.documentElement;
+    root.style.setProperty("--color-text-custom", value);
   },
 };
 
