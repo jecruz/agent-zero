@@ -5,6 +5,31 @@ You are performing an upgrade of the agent-zero fork to the latest upstream vers
 
 ## Your Task
 
+### Step 0: PRESERVE LOCAL CHANGES FIRST (CRITICAL)
+
+Before doing ANYTHING else, protect uncommitted local changes:
+
+```bash
+# Check for uncommitted changes
+git status
+
+# If there are modified files (not staged), stash them FIRST
+git stash push -m "upgrade-prep: local changes before upgrade"
+
+# If there are untracked files (new files in working tree), copy them to backup
+# Untracked files are LOST if you switch branches without saving them
+mkdir -p upgrade/backup-untracked
+for f in $(git status --porcelain | grep "^??" | awk '{print $2}'); do
+    mkdir -p "upgrade/backup-untracked/$(dirname "$f")"
+    cp -r "$f" "upgrade/backup-untracked/$f"
+done
+
+# Verify no local changes remain before switching branches
+git status  # Should show "nothing to commit, working tree clean"
+```
+
+**IMPORTANT**: Untracked files (shown as `??` in git status) exist ONLY in your working tree. They are NOT in any commit. Switching branches will LOSE them forever unless you copy them first.
+
 ### Step 1: Read the upgrade plan
 ```
 Read: upgrade/UPGRADE.md
@@ -103,11 +128,14 @@ Report what failed and what needs fixing.
 
 ## Critical Rules
 
-1. **Never overwrite custom work** — always copy from backup, never delete first
-2. **Test after each priority step** — don't wait until the end to test
-3. **Document every manual change** — note what you changed and why
-4. **Report blockers immediately** — don't try to work around issues silently
-5. **Preserve docker-compose.dev.yml** — it is actively used for UI development
+1. **Step 0 FIRST** — Always preserve local changes before touching anything else
+2. **Untracked files are LOST on branch switch** — Copy them to backup before switching branches
+3. **Stash before switching** — `git stash` any modified working files before creating upgrade branch
+4. **Test after each priority step** — don't wait until the end to test
+5. **Document every manual change** — note what you changed and why
+6. **Report blockers immediately** — don't try to work around issues silently
+7. **Preserve docker-compose.dev.yml** — it is actively used for UI development
+8. **Restore stashed changes after testing** — `git stash pop` once upgrade is stable
 
 ## Backup Location
 All custom files are backed up in:
