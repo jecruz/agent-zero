@@ -5,6 +5,29 @@ You are performing an upgrade of the agent-zero fork to the latest upstream vers
 
 ## Your Task
 
+### Step 0: PRESERVE LOCAL CHANGES (CRITICAL)
+
+Before doing ANYTHING else, protect uncommitted local changes:
+
+```bash
+# Check for uncommitted changes
+git status
+
+# If there are modified files (not staged), stash them
+git stash push -m "upgrade-prep: local changes before upgrade"
+
+# If there are untracked files (new files in working tree), copy them to backup
+# Untracked files are LOST if you switch branches without saving them
+for f in $(git status --porcelain | grep "^??" | awk '{print $2}'); do
+    cp -r "$f" "upgrade/backup-untracked/"
+done
+
+# Verify no local changes remain
+git status  # Should show "nothing to commit, working tree clean"
+```
+
+**IMPORTANT**: Untracked files (files with `??` in git status) exist ONLY in your working tree. They are NOT in any commit. If you switch branches without copying them, they will be LOST forever.
+
 ### Step 1: Read the upgrade plan
 ```
 Read: upgrade/UPGRADE.md
@@ -90,8 +113,15 @@ Report:
 
 ### Step 8: If tests pass — commit
 ```bash
+# Commit the upgrade changes
 git add -A
 git commit -m "feat: upgrade to upstream/latest"
+
+# Restore any stashed changes from the original branch
+git stash list  # Check if anything was stashed
+git stash pop   # Restore stashed changes (if any)
+
+# Push
 git push origin upgrade-to-latest
 ```
 
@@ -103,17 +133,61 @@ Report what failed and what needs fixing.
 
 ## Critical Rules
 
-1. **Never overwrite custom work** — always copy from backup, never delete first
-2. **Test after each priority step** — don't wait until the end to test
-3. **Document every manual change** — note what you changed and why
-4. **Report blockers immediately** — don't try to work around issues silently
-5. **Preserve docker-compose.dev.yml** — it is actively used for UI development
+1. **Step 0 FIRST** — Always preserve local changes before touching anything else
+2. **Untracked files are LOST on branch switch** — Copy them to backup before switching branches
+3. **Stash before switching** — `git stash` any modified working files before creating upgrade branch
+4. **Test after each priority step** — don't wait until the end to test
+5. **Document every manual change** — note what you changed and why
+6. **Report blockers immediately** — don't try to work around issues silently
+7. **Preserve docker-compose.dev.yml** — it is actively used for UI development
+8. **Restore stashed changes after testing** — `git stash pop` once upgrade is stable
 
 ## Backup Location
 All custom files are backed up in:
 ```
 upgrade/backup-custom/
 ```
+
+Additionally, untracked working files (not yet committed) are saved to:
+```
+upgrade/backup-untracked/
+```
+
+## Current Uncommitted Changes (as of 2026-03-26)
+
+The following modified files exist in the working tree (not committed):
+```
+conf/model_providers.yaml
+docker/run/docker-compose.yml
+extensions/python/reasoning_stream/_10_log_from_stream.py
+extensions/python/response_stream/_10_log_from_stream.py
+webui/components/chat/input/bottom-actions.html
+webui/components/chat/input/chat-bar-input.html
+webui/components/chat/input/input-store.js
+webui/components/messages/action-buttons/simple-action-buttons.js
+webui/components/sidebar/bottom/preferences/preferences-panel.html
+webui/components/sidebar/bottom/preferences/preferences-store.js
+webui/css/messages.css
+webui/index.css
+webui/index.js
+webui/js/messages.js
+webui/js/time-utils.js
+```
+
+The following untracked files also exist (not in git at all):
+```
+api/chat_stop.py
+docker/run/DOCKER_DEV.md
+docker/run/docker-compose.dev.yml
+docker/run/agent-zero/
+docs/specs/
+extensions/python/tokens_stream_chunk/
+redmine-mcp.env
+secrets.env
+settings.json
+```
+
+These are preserved via the backup process. The upgrade branch will have access to them after copying from backup.
 
 ## Upstream Info
 - **Upstream repo**: https://github.com/agent0ai/agent-zero.git
