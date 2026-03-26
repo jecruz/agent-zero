@@ -1,0 +1,4496 @@
+diff --git a/api/agents.py b/api/agents.py
+new file mode 100644
+index 00000000..c96b71fb
+--- /dev/null
++++ b/api/agents.py
+@@ -0,0 +1,23 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers import subagents
++
++
++class Agents(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        action = input.get("action", "")
++
++        try:
++            if action == "list":
++                data = subagents.get_all_agents_list()
++            else:
++                raise Exception("Invalid action")
++
++            return {
++                "ok": True,
++                "data": data,
++            }
++        except Exception as e:
++            return {
++                "ok": False,
++                "error": str(e),
++            }
+diff --git a/api/api_files_get.py b/api/api_files_get.py
+new file mode 100644
+index 00000000..b2533f4f
+--- /dev/null
++++ b/api/api_files_get.py
+@@ -0,0 +1,95 @@
++import base64
++import os
++from helpers.api import ApiHandler, Request, Response
++from helpers import files
++from helpers.print_style import PrintStyle
++import json
++
++
++class ApiFilesGet(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_api_key(cls) -> bool:
++        return True
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["POST"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            # Get paths from input
++            paths = input.get("paths", [])
++
++            if not paths:
++                return Response(
++                    '{"error": "paths array is required"}',
++                    status=400,
++                    mimetype="application/json"
++                )
++
++            if not isinstance(paths, list):
++                return Response(
++                    '{"error": "paths must be an array"}',
++                    status=400,
++                    mimetype="application/json"
++                )
++
++            result = {}
++
++            for path in paths:
++                try:
++                    # Convert internal paths to external paths
++                    if path.startswith("/a0/tmp/uploads/"):
++                        # Internal path - convert to external
++                        filename = path.replace("/a0/tmp/uploads/", "")
++                        external_path = files.get_abs_path("usr/uploads", filename)
++                        filename = os.path.basename(external_path)
++                    elif path.startswith("/a0/"):
++                        # Other internal Agent Zero paths
++                        relative_path = path.replace("/a0/", "")
++                        external_path = files.get_abs_path(relative_path)
++                        filename = os.path.basename(external_path)
++                    else:
++                        # Assume it's already an external/absolute path
++                        external_path = path
++                        filename = os.path.basename(path)
++
++                    # Check if file exists
++                    if not os.path.exists(external_path):
++                        PrintStyle.warning(f"File not found: {path}")
++                        continue
++
++                    # Read and encode file
++                    with open(external_path, "rb") as f:
++                        file_content = f.read()
++                        base64_content = base64.b64encode(file_content).decode('utf-8')
++                        result[filename] = base64_content
++
++                    PrintStyle().print(f"Retrieved file: {filename} ({len(file_content)} bytes)")
++
++                except Exception as e:
++                    PrintStyle.error(f"Failed to read file {path}: {str(e)}")
++                    continue
++
++            # Log the retrieval
++            PrintStyle(
++                background_color="#2ECC71", font_color="white", bold=True, padding=True
++            ).print(f"API Files retrieved: {len(result)} files")
++
++            return result
++
++        except Exception as e:
++            PrintStyle.error(f"API files get error: {str(e)}")
++            return Response(
++                json.dumps({"error": f"Internal server error: {str(e)}"}),
++                status=500,
++                mimetype="application/json"
++            )
+diff --git a/api/api_log_get.py b/api/api_log_get.py
+new file mode 100644
+index 00000000..7e26a5f6
+--- /dev/null
++++ b/api/api_log_get.py
+@@ -0,0 +1,65 @@
++from agent import AgentContext
++from helpers.api import ApiHandler, Request, Response
++
++
++class ApiLogGet(ApiHandler):
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["GET", "POST"]
++
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False  # No web auth required
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False  # No CSRF required
++
++    @classmethod
++    def requires_api_key(cls) -> bool:
++        return True  # Require API key
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Extract parameters (support both query params for GET and body for POST)
++        if request.method == "GET":
++            context_id = request.args.get("context_id", "")
++            length = int(request.args.get("length", 100))
++        else:
++            context_id = input.get("context_id", "")
++            length = input.get("length", 100)
++
++        if not context_id:
++            return Response('{"error": "context_id is required"}', status=400, mimetype="application/json")
++
++        # Get context
++        context = AgentContext.use(context_id)
++        if not context:
++            return Response('{"error": "Context not found"}', status=404, mimetype="application/json")
++
++        try:
++            # Get total number of log items
++            total_items = len(context.log.logs)
++
++            # Calculate start position (from newest, so we work backwards)
++            start_pos = max(0, total_items - length)
++
++            # Get log items from the calculated start position
++            log_output = context.log.output(start=start_pos)
++            log_items = log_output.items
++
++            # Return log data with metadata
++            return {
++                "context_id": context_id,
++                "log": {
++                    "guid": context.log.guid,
++                    "total_items": total_items,
++                    "returned_items": len(log_items),
++                    "start_position": start_pos,
++                    "progress": context.log.progress,
++                    "progress_active": bool(context.log.progress_active),
++                    "items": log_items
++                }
++            }
++
++        except Exception as e:
++            return Response(f'{{"error": "{str(e)}"}}', status=500, mimetype="application/json")
+diff --git a/api/api_message.py b/api/api_message.py
+new file mode 100644
+index 00000000..1fbe66b4
+--- /dev/null
++++ b/api/api_message.py
+@@ -0,0 +1,179 @@
++import base64
++import os
++from datetime import datetime, timedelta
++from agent import AgentContext, UserMessage, AgentContextType
++from helpers.api import ApiHandler, Request, Response
++from helpers import files, projects
++from helpers.print_style import PrintStyle
++from helpers.projects import activate_project
++from helpers.security import safe_filename
++from initialize import initialize_agent
++import threading
++
++
++class ApiMessage(ApiHandler):
++    # Track chat lifetimes for cleanup
++    _chat_lifetimes = {}
++    _cleanup_lock = threading.Lock()
++
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False  # No web auth required
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False  # No CSRF required
++
++    @classmethod
++    def requires_api_key(cls) -> bool:
++        return True  # Require API key
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Extract parameters
++        context_id = input.get("context_id", "")
++        message = input.get("message", "")
++        attachments = input.get("attachments", [])
++        lifetime_hours = input.get("lifetime_hours", 24)  # Default 24 hours
++        project_name = input.get("project_name", None)
++        agent_profile = input.get("agent_profile", None)
++        
++        # Set an agent if profile provided
++        override_settings = {}
++        if agent_profile:
++            override_settings["agent_profile"] = agent_profile
++
++        if not message:
++            return Response('{"error": "Message is required"}', status=400, mimetype="application/json")
++
++        # Handle attachments (base64 encoded)
++        attachment_paths = []
++        if attachments:
++            upload_folder_int = "/a0/usr/uploads"
++            upload_folder_ext = files.get_abs_path("usr/uploads")
++            os.makedirs(upload_folder_ext, exist_ok=True)
++
++            for attachment in attachments:
++                if not isinstance(attachment, dict) or "filename" not in attachment or "base64" not in attachment:
++                    continue
++
++                try:
++                    filename = safe_filename(attachment["filename"])
++                    if not filename:
++                        raise ValueError("Invalid filename")
++
++                    # Decode base64 content
++                    file_content = base64.b64decode(attachment["base64"])
++
++                    # Save to temp file
++                    save_path = os.path.join(upload_folder_ext, filename)
++                    with open(save_path, "wb") as f:
++                        f.write(file_content)
++
++                    attachment_paths.append(os.path.join(upload_folder_int, filename))
++                except Exception as e:
++                    PrintStyle.error(f"Failed to process attachment {attachment.get('filename', 'unknown')}: {e}")
++                    continue
++
++        # Get or create context
++        if context_id:
++            context = AgentContext.use(context_id)
++            if not context:
++                return Response('{"error": "Context not found"}', status=404, mimetype="application/json")
++
++            # Validation: if agent profile is provided, it must match the exising
++            if agent_profile and context.agent0.config.profile != agent_profile:
++                return Response('{"error": "Cannot override agent profile on existing context"}', status=400, mimetype="application/json")
++            
++
++            # Validation: if project is provided but context already has different project
++            existing_project = context.get_data(projects.CONTEXT_DATA_KEY_PROJECT)
++            if project_name and existing_project and existing_project != project_name:
++                return Response('{"error": "Project can only be set on first message"}', status=400, mimetype="application/json")
++        else:
++            config = initialize_agent(override_settings=override_settings)
++            context = AgentContext(config=config, type=AgentContextType.USER)
++            AgentContext.use(context.id)
++            context_id = context.id
++            # Activate project if provided
++            if project_name:
++                try:
++                    activate_project(context_id, project_name)
++                except Exception as e:
++                    # Handle project or context errors more gracefully
++                    error_msg = str(e)
++                    PrintStyle.error(f"Failed to activate project '{project_name}' for context '{context_id}': {error_msg}")
++                    return Response(
++                        f'{{"error": "Failed to activate project \\"{project_name}\\""}}',
++                        status=500,
++                        mimetype="application/json",
++                    )
++
++            # Activate project if provided
++            if project_name:
++                try:
++                    projects.activate_project(context_id, project_name)
++                except Exception as e:
++                    return Response(f'{{"error": "Failed to activate project: {str(e)}"}}', status=400, mimetype="application/json")
++
++        # Update chat lifetime
++        with self._cleanup_lock:
++            self._chat_lifetimes[context_id] = datetime.now() + timedelta(hours=lifetime_hours)
++
++        # Process message
++        try:
++            # Log the message
++            attachment_filenames = [os.path.basename(path) for path in attachment_paths] if attachment_paths else []
++
++            PrintStyle(
++                background_color="#6C3483", font_color="white", bold=True, padding=True
++            ).print("External API message:")
++            PrintStyle(font_color="white", padding=False).print(f"> {message}")
++            if attachment_filenames:
++                PrintStyle(font_color="white", padding=False).print("Attachments:")
++                for filename in attachment_filenames:
++                    PrintStyle(font_color="white", padding=False).print(f"- {filename}")
++
++            # Add user message to chat history so it's visible in the UI
++            context.log.log(
++                type="user",
++                heading="",
++                content=message,
++                kvps={"attachments": attachment_filenames},
++            )
++
++            # Send message to agent
++            task = context.communicate(UserMessage(message, attachment_paths))
++            result = await task.result()
++
++            # Clean up expired chats
++            self._cleanup_expired_chats()
++
++            return {
++                "context_id": context_id,
++                "response": result
++            }
++
++        except Exception as e:
++            PrintStyle.error(f"External API error: {e}")
++            return Response(f'{{"error": "{str(e)}"}}', status=500, mimetype="application/json")
++
++    @classmethod
++    def _cleanup_expired_chats(cls):
++        """Clean up expired chats"""
++        with cls._cleanup_lock:
++            now = datetime.now()
++            expired_contexts = [
++                context_id for context_id, expiry in cls._chat_lifetimes.items()
++                if now > expiry
++            ]
++
++            for context_id in expired_contexts:
++                try:
++                    context = AgentContext.get(context_id)
++                    if context:
++                        context.reset()
++                        AgentContext.remove(context_id)
++                    del cls._chat_lifetimes[context_id]
++                    PrintStyle().print(f"Cleaned up expired chat: {context_id}")
++                except Exception as e:
++                    PrintStyle.error(f"Failed to cleanup chat {context_id}: {e}")
+diff --git a/api/api_reset_chat.py b/api/api_reset_chat.py
+new file mode 100644
+index 00000000..ddddf56a
+--- /dev/null
++++ b/api/api_reset_chat.py
+@@ -0,0 +1,70 @@
++from agent import AgentContext
++from helpers.api import ApiHandler, Request, Response
++from helpers.print_style import PrintStyle
++from helpers import persist_chat
++import json
++
++
++class ApiResetChat(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_api_key(cls) -> bool:
++        return True
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["POST"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            # Get context_id from input
++            context_id = input.get("context_id")
++
++            if not context_id:
++                return Response(
++                    '{"error": "context_id is required"}',
++                    status=400,
++                    mimetype="application/json"
++                )
++
++            # Check if context exists
++            context = AgentContext.use(context_id)
++            if not context:
++                return Response(
++                    '{"error": "Chat context not found"}',
++                    status=404,
++                    mimetype="application/json"
++                )
++
++            # Reset the chat context (clears history but keeps context alive)
++            context.reset()
++            # Save the reset context to persist the changes
++            persist_chat.save_tmp_chat(context)
++            persist_chat.remove_msg_files(context_id)
++
++            # Log the reset
++            PrintStyle(
++                background_color="#3498DB", font_color="white", bold=True, padding=True
++            ).print(f"API Chat reset: {context_id}")
++
++            # Return success response
++            return {
++                "success": True,
++                "message": "Chat reset successfully",
++                "context_id": context_id
++            }
++
++        except Exception as e:
++            PrintStyle.error(f"API reset chat error: {str(e)}")
++            return Response(
++                json.dumps({"error": f"Internal server error: {str(e)}"}),
++                status=500,
++                mimetype="application/json"
++            )
+diff --git a/api/api_terminate_chat.py b/api/api_terminate_chat.py
+new file mode 100644
+index 00000000..a4d228ea
+--- /dev/null
++++ b/api/api_terminate_chat.py
+@@ -0,0 +1,68 @@
++from agent import AgentContext
++from helpers.api import ApiHandler, Request, Response
++from helpers.persist_chat import remove_chat
++from helpers.print_style import PrintStyle
++import json
++
++
++class ApiTerminateChat(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_api_key(cls) -> bool:
++        return True
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["POST"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            # Get context_id from input
++            context_id = input.get("context_id")
++
++            if not context_id:
++                return Response(
++                    '{"error": "context_id is required"}',
++                    status=400,
++                    mimetype="application/json"
++                )
++
++            # Check if context exists
++            context = AgentContext.use(context_id)
++            if not context:
++                return Response(
++                    '{"error": "Chat context not found"}',
++                    status=404,
++                    mimetype="application/json"
++                )
++
++            # Delete the chat context
++            AgentContext.remove(context.id)
++            remove_chat(context.id)
++
++            # Log the deletion
++            PrintStyle(
++                background_color="#E74C3C", font_color="white", bold=True, padding=True
++            ).print(f"API Chat deleted: {context_id}")
++
++            # Return success response
++            return {
++                "success": True,
++                "message": "Chat deleted successfully",
++                "context_id": context_id
++            }
++
++        except Exception as e:
++            PrintStyle.error(f"API terminate chat error: {str(e)}")
++            return Response(
++                json.dumps({"error": f"Internal server error: {str(e)}"}),
++                status=500,
++                mimetype="application/json"
++            )
+diff --git a/api/backup_create.py b/api/backup_create.py
+new file mode 100644
+index 00000000..f6c55dcd
+--- /dev/null
++++ b/api/backup_create.py
+@@ -0,0 +1,58 @@
++from helpers.api import ApiHandler, Request, Response, send_file
++from helpers.backup import BackupService
++from helpers.persist_chat import save_tmp_chats
++
++
++class BackupCreate(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            # Get input parameters
++            include_patterns = input.get("include_patterns", [])
++            exclude_patterns = input.get("exclude_patterns", [])
++            include_hidden = input.get("include_hidden", True)
++            backup_name = input.get("backup_name", "agent-zero-backup")
++
++            # Support legacy string patterns format for backward compatibility
++            patterns_string = input.get("patterns", "")
++            if patterns_string and not include_patterns and not exclude_patterns:
++                # Parse legacy format
++                lines = [line.strip() for line in patterns_string.split('\n') if line.strip() and not line.strip().startswith('#')]
++                for line in lines:
++                    if line.startswith('!'):
++                        exclude_patterns.append(line[1:])
++                    else:
++                        include_patterns.append(line)
++
++            # Save all chats to the chats folder
++            save_tmp_chats()
++
++            # Create backup service and generate backup
++            backup_service = BackupService()
++            zip_path = await backup_service.create_backup(
++                include_patterns=include_patterns,
++                exclude_patterns=exclude_patterns,
++                include_hidden=include_hidden,
++                backup_name=backup_name
++            )
++
++            # Return file for download
++            return send_file(
++                zip_path,
++                as_attachment=True,
++                download_name=f"{backup_name}.zip",
++                mimetype='application/zip'
++            )
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/backup_get_defaults.py b/api/backup_get_defaults.py
+new file mode 100644
+index 00000000..0a0ba4b1
+--- /dev/null
++++ b/api/backup_get_defaults.py
+@@ -0,0 +1,32 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers.backup import BackupService
++
++
++class BackupGetDefaults(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            backup_service = BackupService()
++            default_metadata = backup_service.get_default_backup_metadata()
++
++            return {
++                "success": True,
++                "default_patterns": {
++                    "include_patterns": default_metadata["include_patterns"],
++                    "exclude_patterns": default_metadata["exclude_patterns"]
++                },
++                "metadata": default_metadata
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/backup_inspect.py b/api/backup_inspect.py
+new file mode 100644
+index 00000000..8bbf9114
+--- /dev/null
++++ b/api/backup_inspect.py
+@@ -0,0 +1,49 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers.backup import BackupService
++from werkzeug.datastructures import FileStorage
++
++
++class BackupInspect(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Handle file upload
++        if 'backup_file' not in request.files:
++            return {"success": False, "error": "No backup file provided"}
++
++        backup_file: FileStorage = request.files['backup_file']
++        if backup_file.filename == '':
++            return {"success": False, "error": "No file selected"}
++
++        try:
++            backup_service = BackupService()
++            metadata = await backup_service.inspect_backup(backup_file)
++
++            return {
++                "success": True,
++                "metadata": metadata,
++                "files": metadata.get("files", []),
++                "include_patterns": metadata.get("include_patterns", []),
++                "exclude_patterns": metadata.get("exclude_patterns", []),
++                "default_patterns": metadata.get("backup_config", {}).get("default_patterns", ""),
++                "agent_zero_version": metadata.get("agent_zero_version", "unknown"),
++                "timestamp": metadata.get("timestamp", ""),
++                "backup_name": metadata.get("backup_name", ""),
++                "total_files": metadata.get("total_files", len(metadata.get("files", []))),
++                "backup_size": metadata.get("backup_size", 0),
++                "include_hidden": metadata.get("include_hidden", True),
++                "files_in_archive": metadata.get("files_in_archive", []),
++                "checksums": {}  # Will be added if needed
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/backup_preview_grouped.py b/api/backup_preview_grouped.py
+new file mode 100644
+index 00000000..736d1777
+--- /dev/null
++++ b/api/backup_preview_grouped.py
+@@ -0,0 +1,131 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers.backup import BackupService
++from typing import Dict, Any
++
++
++class BackupPreviewGrouped(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            # Get input parameters
++            include_patterns = input.get("include_patterns", [])
++            exclude_patterns = input.get("exclude_patterns", [])
++            include_hidden = input.get("include_hidden", True)
++            max_depth = input.get("max_depth", 3)
++            search_filter = input.get("search_filter", "")
++
++            # Support legacy string patterns format for backward compatibility
++            patterns_string = input.get("patterns", "")
++            if patterns_string and not include_patterns:
++                lines = [line.strip() for line in patterns_string.split('\n')
++                         if line.strip() and not line.strip().startswith('#')]
++                for line in lines:
++                    if line.startswith('!'):
++                        exclude_patterns.append(line[1:])
++                    else:
++                        include_patterns.append(line)
++
++            if not include_patterns:
++                return {
++                    "success": True,
++                    "groups": [],
++                    "stats": {"total_groups": 0, "total_files": 0, "total_size": 0},
++                    "total_files": 0,
++                    "total_size": 0
++                }
++
++            # Create metadata object for testing
++            metadata = {
++                "include_patterns": include_patterns,
++                "exclude_patterns": exclude_patterns,
++                "include_hidden": include_hidden
++            }
++
++            backup_service = BackupService()
++            all_files = await backup_service.test_patterns(metadata, max_files=10000)
++
++            # Apply search filter if provided
++            if search_filter.strip():
++                search_lower = search_filter.lower()
++                all_files = [f for f in all_files if search_lower in f["path"].lower()]
++
++            # Group files by directory structure
++            groups: Dict[str, Dict[str, Any]] = {}
++            total_size = 0
++
++            for file_info in all_files:
++                path = file_info["path"]
++                total_size += file_info["size"]
++
++                # Split path and limit depth
++                path_parts = path.strip('/').split('/')
++
++                # Limit to max_depth for grouping
++                if len(path_parts) > max_depth:
++                    group_path = '/' + '/'.join(path_parts[:max_depth])
++                    is_truncated = True
++                else:
++                    group_path = '/' + '/'.join(path_parts[:-1]) if len(path_parts) > 1 else '/'
++                    is_truncated = False
++
++                if group_path not in groups:
++                    groups[group_path] = {
++                        "path": group_path,
++                        "files": [],
++                        "file_count": 0,
++                        "total_size": 0,
++                        "is_truncated": False,
++                        "subdirectories": set()
++                    }
++
++                groups[group_path]["files"].append(file_info)
++                groups[group_path]["file_count"] += 1
++                groups[group_path]["total_size"] += file_info["size"]
++                groups[group_path]["is_truncated"] = groups[group_path]["is_truncated"] or is_truncated
++
++                # Track subdirectories for truncated groups
++                if is_truncated and len(path_parts) > max_depth:
++                    next_dir = path_parts[max_depth]
++                    groups[group_path]["subdirectories"].add(next_dir)
++
++            # Convert groups to sorted list and add display info
++            sorted_groups = []
++            for group_path, group_info in sorted(groups.items()):
++                group_info["subdirectories"] = sorted(list(group_info["subdirectories"]))
++
++                # Limit displayed files for UI performance
++                if len(group_info["files"]) > 50:
++                    group_info["displayed_files"] = group_info["files"][:50]
++                    group_info["additional_files"] = len(group_info["files"]) - 50
++                else:
++                    group_info["displayed_files"] = group_info["files"]
++                    group_info["additional_files"] = 0
++
++                sorted_groups.append(group_info)
++
++            return {
++                "success": True,
++                "groups": sorted_groups,
++                "stats": {
++                    "total_groups": len(sorted_groups),
++                    "total_files": len(all_files),
++                    "total_size": total_size,
++                    "search_applied": bool(search_filter.strip()),
++                    "max_depth": max_depth
++                },
++                "total_files": len(all_files),
++                "total_size": total_size
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/backup_restore.py b/api/backup_restore.py
+new file mode 100644
+index 00000000..4b4d3c47
+--- /dev/null
++++ b/api/backup_restore.py
+@@ -0,0 +1,66 @@
++from helpers.api import ApiHandler, Request, Response
++from werkzeug.datastructures import FileStorage
++from helpers.backup import BackupService
++from helpers.persist_chat import load_tmp_chats
++import json
++
++
++class BackupRestore(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Handle file upload
++        if 'backup_file' not in request.files:
++            return {"success": False, "error": "No backup file provided"}
++
++        backup_file: FileStorage = request.files['backup_file']
++        if backup_file.filename == '':
++            return {"success": False, "error": "No file selected"}
++
++        # Get restore configuration from form data
++        metadata_json = request.form.get('metadata', '{}')
++        overwrite_policy = request.form.get('overwrite_policy', 'overwrite')  # overwrite, skip, backup
++        clean_before_restore = request.form.get('clean_before_restore', 'false').lower() == 'true'
++
++        try:
++            metadata = json.loads(metadata_json)
++            restore_include_patterns = metadata.get("include_patterns", [])
++            restore_exclude_patterns = metadata.get("exclude_patterns", [])
++        except json.JSONDecodeError:
++            return {"success": False, "error": "Invalid metadata JSON"}
++
++        try:
++            backup_service = BackupService()
++            result = await backup_service.restore_backup(
++                backup_file=backup_file,
++                restore_include_patterns=restore_include_patterns,
++                restore_exclude_patterns=restore_exclude_patterns,
++                overwrite_policy=overwrite_policy,
++                clean_before_restore=clean_before_restore,
++                user_edited_metadata=metadata
++            )
++
++            # Load all chats from the chats folder
++            load_tmp_chats()
++
++            return {
++                "success": True,
++                "restored_files": result["restored_files"],
++                "deleted_files": result.get("deleted_files", []),
++                "skipped_files": result["skipped_files"],
++                "errors": result["errors"],
++                "backup_metadata": result["backup_metadata"],
++                "clean_before_restore": result.get("clean_before_restore", False)
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/backup_restore_preview.py b/api/backup_restore_preview.py
+new file mode 100644
+index 00000000..aeedb36f
+--- /dev/null
++++ b/api/backup_restore_preview.py
+@@ -0,0 +1,67 @@
++from helpers.api import ApiHandler, Request, Response
++from werkzeug.datastructures import FileStorage
++from helpers.backup import BackupService
++import json
++
++
++class BackupRestorePreview(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Handle file upload
++        if 'backup_file' not in request.files:
++            return {"success": False, "error": "No backup file provided"}
++
++        backup_file: FileStorage = request.files['backup_file']
++        if backup_file.filename == '':
++            return {"success": False, "error": "No file selected"}
++
++        # Get restore patterns and options from form data
++        metadata_json = request.form.get('metadata', '{}')
++        overwrite_policy = request.form.get('overwrite_policy', 'overwrite')
++        clean_before_restore = request.form.get('clean_before_restore', 'false').lower() == 'true'
++
++        try:
++            metadata = json.loads(metadata_json)
++            restore_include_patterns = metadata.get("include_patterns", [])
++            restore_exclude_patterns = metadata.get("exclude_patterns", [])
++        except json.JSONDecodeError:
++            return {"success": False, "error": "Invalid metadata JSON"}
++
++        try:
++            backup_service = BackupService()
++            result = await backup_service.preview_restore(
++                backup_file=backup_file,
++                restore_include_patterns=restore_include_patterns,
++                restore_exclude_patterns=restore_exclude_patterns,
++                overwrite_policy=overwrite_policy,
++                clean_before_restore=clean_before_restore,
++                user_edited_metadata=metadata
++            )
++
++            return {
++                "success": True,
++                "files": result["files"],
++                "files_to_delete": result.get("files_to_delete", []),
++                "files_to_restore": result.get("files_to_restore", []),
++                "skipped_files": result["skipped_files"],
++                "total_count": result["total_count"],
++                "delete_count": result.get("delete_count", 0),
++                "restore_count": result.get("restore_count", 0),
++                "skipped_count": result["skipped_count"],
++                "backup_metadata": result["backup_metadata"],
++                "overwrite_policy": result.get("overwrite_policy", "overwrite"),
++                "clean_before_restore": result.get("clean_before_restore", False)
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/backup_test.py b/api/backup_test.py
+new file mode 100644
+index 00000000..b5b43eac
+--- /dev/null
++++ b/api/backup_test.py
+@@ -0,0 +1,62 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers.backup import BackupService
++
++
++class BackupTest(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        try:
++            # Get input parameters
++            include_patterns = input.get("include_patterns", [])
++            exclude_patterns = input.get("exclude_patterns", [])
++            include_hidden = input.get("include_hidden", True)
++            max_files = input.get("max_files", 1000)
++
++            # Support legacy string patterns format for backward compatibility
++            patterns_string = input.get("patterns", "")
++            if patterns_string and not include_patterns:
++                # Parse patterns string into arrays
++                lines = [line.strip() for line in patterns_string.split('\n') if line.strip() and not line.strip().startswith('#')]
++                for line in lines:
++                    if line.startswith('!'):
++                        exclude_patterns.append(line[1:])
++                    else:
++                        include_patterns.append(line)
++
++            if not include_patterns:
++                return {
++                    "success": True,
++                    "files": [],
++                    "total_count": 0,
++                    "truncated": False
++                }
++
++            # Create metadata object for testing
++            metadata = {
++                "include_patterns": include_patterns,
++                "exclude_patterns": exclude_patterns,
++                "include_hidden": include_hidden
++            }
++
++            backup_service = BackupService()
++            matched_files = await backup_service.test_patterns(metadata, max_files=max_files)
++
++            return {
++                "success": True,
++                "files": matched_files,
++                "total_count": len(matched_files),
++                "truncated": len(matched_files) >= max_files
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": str(e)
++            }
+diff --git a/api/banners.py b/api/banners.py
+new file mode 100644
+index 00000000..58c2f19c
+--- /dev/null
++++ b/api/banners.py
+@@ -0,0 +1,19 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers.extension import call_extensions_async
++
++
++class GetBanners(ApiHandler):
++    """
++    API endpoint for Welcome Screen banners.
++    Add checks as extension scripts in python/extensions/banners/ or usr/extensions/banners/
++    """
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        banners = input.get("banners", [])
++        frontend_context = input.get("context", {})
++        
++        # Banners array passed by reference - extensions append directly to it
++        await call_extensions_async("banners", agent=None, banners=banners, frontend_context=frontend_context)
++        
++        return {"banners": banners}
++
+diff --git a/api/cache_reset.py b/api/cache_reset.py
+new file mode 100644
+index 00000000..ea45c508
+--- /dev/null
++++ b/api/cache_reset.py
+@@ -0,0 +1,35 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import cache
++
++
++class CacheReset(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_api_key(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return True
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["GET", "POST"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        areas = input.get("areas", [])
++
++        if not areas:
++            cache.clear_all()
++        else:
++            for area in areas:
++                cache.clear(area)
++
++        return {"ok": True}
+diff --git a/api/chat_create.py b/api/chat_create.py
+new file mode 100644
+index 00000000..3f6996ad
+--- /dev/null
++++ b/api/chat_create.py
+@@ -0,0 +1,36 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++
++
++from helpers import settings, projects, guids
++from agent import AgentContext
++
++
++class CreateChat(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        current_ctxid = input.get("current_context", "") # current context id
++        new_ctxid = input.get("new_context", guids.generate_id()) # given or new guid
++
++        # context instance - get or create
++        current_context = AgentContext.get(current_ctxid)
++
++        # get/create new context
++        new_context = self.use_context(new_ctxid)
++
++        # copy selected data from current to new context
++        if current_context and settings.get_settings().get("chat_inherit_project", True):
++            current_data_1 = current_context.get_data(projects.CONTEXT_DATA_KEY_PROJECT)
++            if current_data_1:
++                new_context.set_data(projects.CONTEXT_DATA_KEY_PROJECT, current_data_1)
++            current_data_2 = current_context.get_output_data(projects.CONTEXT_DATA_KEY_PROJECT)
++            if current_data_2:
++                new_context.set_output_data(projects.CONTEXT_DATA_KEY_PROJECT, current_data_2)
++
++        # New context should appear in other tabs' chat lists via state_push.
++        from helpers.state_monitor_integration import mark_dirty_all
++        mark_dirty_all(reason="api.chat_create.CreateChat")
++
++        return {
++            "ok": True,
++            "ctxid": new_context.id,
++            "message": "Context created.",
++        }
+diff --git a/api/chat_export.py b/api/chat_export.py
+new file mode 100644
+index 00000000..ab0d17b3
+--- /dev/null
++++ b/api/chat_export.py
+@@ -0,0 +1,17 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++
++from helpers import persist_chat
++
++class ExportChat(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        ctxid = input.get("ctxid", "")
++        if not ctxid:
++            raise Exception("No context id provided")
++
++        context = self.use_context(ctxid)
++        content = persist_chat.export_json_chat(context)
++        return {
++            "message": "Chats exported.",
++            "ctxid": context.id,
++            "content": content,
++        }
+\ No newline at end of file
+diff --git a/api/chat_files_path_get.py b/api/chat_files_path_get.py
+new file mode 100644
+index 00000000..4cb11ffd
+--- /dev/null
++++ b/api/chat_files_path_get.py
+@@ -0,0 +1,21 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import files, projects, settings
++
++
++class GetChatFilesPath(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        ctxid = input.get("ctxid", "")
++        if not ctxid:
++            raise Exception("No context id provided")
++        context = self.use_context(ctxid)
++
++        project_name = projects.get_context_project_name(context)
++        if project_name:
++            folder = files.normalize_a0_path(projects.get_project_folder(project_name))
++        else:
++            folder = settings.get_settings()["workdir_path"]
++
++        return {
++            "ok": True,
++            "path": folder,
++        }
+\ No newline at end of file
+diff --git a/api/chat_load.py b/api/chat_load.py
+new file mode 100644
+index 00000000..c9c4226e
+--- /dev/null
++++ b/api/chat_load.py
+@@ -0,0 +1,17 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++
++
++from helpers import persist_chat
++
++class LoadChats(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        chats = input.get("chats", [])
++        if not chats:
++            raise Exception("No chats provided")
++
++        ctxids = persist_chat.load_json_chats(chats)
++
++        return {
++            "message": "Chats loaded.",
++            "ctxids": ctxids,
++        }
+diff --git a/api/chat_remove.py b/api/chat_remove.py
+new file mode 100644
+index 00000000..aecf59dd
+--- /dev/null
++++ b/api/chat_remove.py
+@@ -0,0 +1,34 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++from agent import AgentContext
++from helpers import persist_chat
++from helpers.task_scheduler import TaskScheduler
++
++
++class RemoveChat(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        ctxid = input.get("context", "")
++
++        scheduler = TaskScheduler.get()
++        scheduler.cancel_tasks_by_context(ctxid, terminate_thread=True)
++
++        context = AgentContext.use(ctxid)
++        if context:
++            # stop processing any tasks
++            context.reset()
++
++        AgentContext.remove(ctxid)
++        persist_chat.remove_chat(ctxid)
++
++        await scheduler.reload()
++
++        tasks = scheduler.get_tasks_by_context_id(ctxid)
++        for task in tasks:
++            await scheduler.remove_task_by_uuid(task.uuid)
++
++        # Context removal affects global chat/task lists in all tabs.
++        from helpers.state_monitor_integration import mark_dirty_all
++        mark_dirty_all(reason="api.chat_remove.RemoveChat")
++
++        return {
++            "message": "Context removed.",
++        }
+diff --git a/api/chat_reset.py b/api/chat_reset.py
+new file mode 100644
+index 00000000..3030eed9
+--- /dev/null
++++ b/api/chat_reset.py
+@@ -0,0 +1,27 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++
++
++from helpers import persist_chat
++from helpers.task_scheduler import TaskScheduler
++
++
++class Reset(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        ctxid = input.get("context", "")
++
++        # attempt to stop any scheduler tasks bound to this context
++        TaskScheduler.get().cancel_tasks_by_context(ctxid, terminate_thread=True)
++
++        # context instance - get or create
++        context = self.use_context(ctxid)
++        context.reset()
++        persist_chat.save_tmp_chat(context)
++        persist_chat.remove_msg_files(ctxid)
++
++        # Reset updates context metadata (log guid/version) and must refresh other tabs' lists.
++        from helpers.state_monitor_integration import mark_dirty_all
++        mark_dirty_all(reason="api.chat_reset.Reset")
++
++        return {
++            "message": "Agent restarted.",
++        }
+diff --git a/api/csrf_token.py b/api/csrf_token.py
+new file mode 100644
+index 00000000..5f4ba13d
+--- /dev/null
++++ b/api/csrf_token.py
+@@ -0,0 +1,154 @@
++import secrets
++from urllib.parse import urlparse
++from helpers.api import (
++    ApiHandler,
++    Input,
++    Output,
++    Request,
++    Response,
++    session,
++)
++from helpers import runtime, dotenv, login
++import fnmatch
++
++ALLOWED_ORIGINS_KEY = "ALLOWED_ORIGINS"
++
++
++class GetCsrfToken(ApiHandler):
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["GET"]
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    async def process(self, input: Input, request: Request) -> Output:
++
++        # check for allowed origin to prevent dns rebinding attacks
++        origin_check = await self.check_allowed_origin(request)
++        if not origin_check["ok"]:
++            return {
++                "ok": False,
++                "error": f"Origin {self.get_origin_from_request(request)} not allowed when login is disabled. Set login and password or add your URL to ALLOWED_ORIGINS env variable. Currently allowed origins: {','.join(origin_check['allowed_origins'])}",
++            }
++
++        # generate a csrf token if it doesn't exist
++        if "csrf_token" not in session:
++            session["csrf_token"] = secrets.token_urlsafe(32)
++
++        # return the csrf token and runtime id
++        return {
++            "ok": True,
++            "token": session["csrf_token"],
++            "runtime_id": runtime.get_runtime_id(),
++        }
++
++    async def check_allowed_origin(self, request: Request):
++        # if login is required, this check is unnecessary
++        if login.is_login_required():
++            return {"ok": True, "origin": "", "allowed_origins": ""}
++        # initialize allowed origins if not yet set
++        self.initialize_allowed_origins(request)
++        # otherwise, check if the origin is allowed
++        return await self.is_allowed_origin(request)
++
++    async def is_allowed_origin(self, request: Request):
++        # get the origin from the request
++        origin = self.get_origin_from_request(request)
++        if not origin:
++            return {"ok": False, "origin": "", "allowed_origins": ""}
++
++        # list of allowed origins
++        allowed_origins = await self.get_allowed_origins()
++
++        # check if the origin is allowed
++        match = any(
++            fnmatch.fnmatch(origin, allowed_origin)
++            for allowed_origin in allowed_origins
++        )
++        return {"ok": match, "origin": origin, "allowed_origins": allowed_origins}
++
++    def get_origin_from_request(self, request: Request):
++        # get from origin
++        r = request.headers.get("Origin") or request.environ.get("HTTP_ORIGIN")
++        if not r:
++            # try referer if origin not present
++            r = (
++                request.headers.get("Referer")
++                or request.referrer
++                or request.environ.get("HTTP_REFERER")
++            )
++        if not r:
++            return None
++        # parse and normalize
++        p = urlparse(r)
++        if not p.scheme or not p.hostname:
++            return None
++        return f"{p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")
++
++    async def get_allowed_origins(self) -> list[str]:
++        # get the allowed origins from the environment
++        allowed_origins = [
++            origin.strip()
++            for origin in (dotenv.get_dotenv_value(ALLOWED_ORIGINS_KEY) or "").split(
++                ","
++            )
++            if origin.strip()
++        ]
++
++        # if there are no allowed origins, allow default localhosts
++        if not allowed_origins:
++            allowed_origins = self.get_default_allowed_origins()
++
++        # always allow tunnel url if running
++        try:
++            from api.tunnel_proxy import process as tunnel_api_process
++
++            tunnel = await tunnel_api_process({"action": "get"})
++            if tunnel and isinstance(tunnel, dict) and tunnel["success"]:
++                allowed_origins.append(tunnel["tunnel_url"])
++        except Exception:
++            pass
++
++        return allowed_origins
++
++    def get_default_allowed_origins(self) -> list[str]:
++        return [
++            "*://localhost",
++            "*://localhost:*",
++            "*://127.0.0.1",
++            "*://127.0.0.1:*",
++            "*://0.0.0.0",
++            "*://0.0.0.0:*",
++        ]
++
++    def initialize_allowed_origins(self, request: Request):
++        """
++        If A0 is hosted on a server, add the first visit origin to ALLOWED_ORIGINS.
++        This simplifies deployment process as users can access their new instance without
++        additional setup while keeping it secure.
++        """
++        # dotenv value is already set, do nothing
++        denv = dotenv.get_dotenv_value(ALLOWED_ORIGINS_KEY)
++        if denv:
++            return
++
++        # get the origin from the request
++        req_origin = self.get_origin_from_request(request)
++        if not req_origin:
++            return
++
++        # check if the origin is allowed by default
++        allowed_origins = self.get_default_allowed_origins()
++        match = any(
++            fnmatch.fnmatch(req_origin, allowed_origin)
++            for allowed_origin in allowed_origins
++        )
++        if match:
++            return
++
++        # if not, add it to the allowed origins
++        allowed_origins.append(req_origin)
++        dotenv.save_dotenv_value(ALLOWED_ORIGINS_KEY, ",".join(allowed_origins))
+diff --git a/api/ctx_window_get.py b/api/ctx_window_get.py
+new file mode 100644
+index 00000000..ba6f2450
+--- /dev/null
++++ b/api/ctx_window_get.py
+@@ -0,0 +1,18 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++
++from helpers import tokens
++
++
++class GetCtxWindow(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        ctxid = input.get("context", [])
++        context = self.use_context(ctxid)
++        agent = context.streaming_agent or context.agent0
++        window = agent.get_data(agent.DATA_NAME_CTX_WINDOW)
++        if not window or not isinstance(window, dict):
++            return {"content": "", "tokens": 0}
++
++        text = window["text"]
++        tokens = window["tokens"]
++
++        return {"content": text, "tokens": tokens}
+diff --git a/api/delete_work_dir_file.py b/api/delete_work_dir_file.py
+new file mode 100644
+index 00000000..a925dd40
+--- /dev/null
++++ b/api/delete_work_dir_file.py
+@@ -0,0 +1,34 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++
++
++from helpers.file_browser import FileBrowser
++from helpers import files, runtime
++from api import get_work_dir_files
++
++
++class DeleteWorkDirFile(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        try:
++            file_path = input.get("path", "")
++            if not file_path.startswith("/"):
++                file_path = f"/{file_path}"
++
++            current_path = input.get("currentPath", "")
++
++            # browser = FileBrowser()
++            res = await runtime.call_development_function(delete_file, file_path)
++
++            if res:
++                # Get updated file list
++                # result = browser.get_files(current_path)
++                result = await runtime.call_development_function(get_work_dir_files.get_files, current_path)
++                return {"data": result}
++            else:
++                return {"error": "File not found or could not be deleted"}
++        except Exception as e:
++            return {"error": str(e)}
++
++
++async def delete_file(file_path: str):
++    browser = FileBrowser()
++    return browser.delete_file(file_path)
+diff --git a/api/download_work_dir_file.py b/api/download_work_dir_file.py
+new file mode 100644
+index 00000000..4ac184ea
+--- /dev/null
++++ b/api/download_work_dir_file.py
+@@ -0,0 +1,141 @@
++import base64
++from io import BytesIO
++import mimetypes
++import os
++
++from flask import Response
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers import files, runtime
++from api import file_info
++from urllib.parse import quote
++
++
++
++def stream_file_download(file_source, download_name, chunk_size=8192):
++    """
++    Create a streaming response for file downloads that shows progress in browser.
++
++    Args:
++        file_source: Either a file path (str) or BytesIO object
++        download_name: Name for the downloaded file
++        chunk_size: Size of chunks to stream (default 8192 bytes)
++
++    Returns:
++        Flask Response object with streaming content
++    """
++    # Calculate file size for Content-Length header
++    if isinstance(file_source, str):
++        # File path - get size from filesystem
++        file_size = os.path.getsize(file_source)
++    elif isinstance(file_source, BytesIO):
++        # BytesIO object - get size from buffer
++        current_pos = file_source.tell()
++        file_source.seek(0, 2)  # Seek to end
++        file_size = file_source.tell()
++        file_source.seek(current_pos)  # Restore original position
++    else:
++        raise ValueError(f"Unsupported file source type: {type(file_source)}")
++
++    def generate():
++        if isinstance(file_source, str):
++            # File path - open and stream from disk
++            with open(file_source, 'rb') as f:
++                while True:
++                    chunk = f.read(chunk_size)
++                    if not chunk:
++                        break
++                    yield chunk
++        elif isinstance(file_source, BytesIO):
++            # BytesIO object - stream from memory
++            file_source.seek(0)  # Ensure we're at the beginning
++            while True:
++                chunk = file_source.read(chunk_size)
++                if not chunk:
++                    break
++                yield chunk
++
++    # Detect content type based on file extension
++    content_type, _ = mimetypes.guess_type(download_name)
++    if not content_type:
++        content_type = 'application/octet-stream'
++
++    # Create streaming response with proper headers for immediate streaming
++    response = Response(
++        generate(),
++        content_type=content_type,
++        direct_passthrough=True,  # Prevent Flask from buffering the response
++        headers={
++            'Content-Disposition': make_disposition(download_name),
++            'Content-Length': str(file_size),  # Critical for browser progress bars
++            'Cache-Control': 'no-cache',
++            'X-Accel-Buffering': 'no',  # Disable nginx buffering
++            'Accept-Ranges': 'bytes'  # Allow browser to resume downloads
++        }
++    )
++
++    return response
++
++
++def make_disposition(download_name: str) -> str:
++    # Basic ASCII fallback (strip or replace weird chars)
++    ascii_fallback = download_name.encode("ascii", "ignore").decode("ascii") or "download"
++    utf8_name = quote(download_name)  # URL-encode UTF-8 bytes
++
++    # RFC 5987: filename* with UTF-8
++    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{utf8_name}'
++
++
++class DownloadFile(ApiHandler):
++
++    @classmethod
++    def get_methods(cls):
++        return ["GET"]
++
++    async def process(self, input: Input, request: Request) -> Output:
++        file_path = request.args.get("path", input.get("path", ""))
++        if not file_path:
++            raise ValueError("No file path provided")
++        if not file_path.startswith("/"):
++            file_path = f"/{file_path}"
++
++        file = await runtime.call_development_function(
++            file_info.get_file_info, file_path
++        )
++
++        if not file["exists"]:
++            raise Exception(f"File {file_path} not found")
++
++        if file["is_dir"]:
++            zip_file = await runtime.call_development_function(files.zip_dir, file["abs_path"])
++            if runtime.is_development():
++                b64 = await runtime.call_development_function(fetch_file, zip_file)
++                file_data = BytesIO(base64.b64decode(b64))
++                return stream_file_download(
++                    file_data,
++                    download_name=os.path.basename(zip_file)
++                )
++            else:
++                return stream_file_download(
++                    zip_file,
++                    download_name=f"{os.path.basename(file_path)}.zip"
++                )
++        elif file["is_file"]:
++            if runtime.is_development():
++                b64 = await runtime.call_development_function(fetch_file, file["abs_path"])
++                file_data = BytesIO(base64.b64decode(b64))
++                return stream_file_download(
++                    file_data,
++                    download_name=os.path.basename(file_path)
++                )
++            else:
++                return stream_file_download(
++                    file["abs_path"],
++                    download_name=os.path.basename(file["file_name"])
++                )
++        raise Exception(f"File {file_path} not found")
++
++
++async def fetch_file(path):
++    with open(path, "rb") as file:
++        file_content = file.read()
++        return base64.b64encode(file_content).decode("utf-8")
+diff --git a/api/edit_work_dir_file.py b/api/edit_work_dir_file.py
+new file mode 100644
+index 00000000..2c043df6
+--- /dev/null
++++ b/api/edit_work_dir_file.py
+@@ -0,0 +1,93 @@
++import mimetypes
++import os
++
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.file_browser import FileBrowser
++from helpers import runtime, files
++
++MAX_EDIT_FILE_SIZE = 1024 * 1024
++BINARY_SAMPLE_SIZE = 10 * 1024
++
++
++class EditWorkDirFile(ApiHandler):
++    @classmethod
++    def get_methods(cls):
++        return ["GET", "POST"]
++
++    def _extract_error_message(self, error_str: str) -> str:
++        """Extract user-friendly error message from exception string."""
++        for line in reversed(error_str.split('\n')):
++            if ': ' in line and ('Exception' in line or 'Error' in line):
++                return line.split(': ', 1)[1].strip()
++        return error_str.strip()
++
++    async def process(self, input: Input, request: Request) -> Output:
++        try:
++            if request.method == "GET":
++                file_path = request.args.get("path", "")
++                if not file_path:
++                    return {"error": "Path is required"}
++                if not file_path.startswith("/"):
++                    file_path = f"/{file_path}"
++
++                data = await runtime.call_development_function(load_file, file_path)
++                return {"data": data}
++
++            file_path = input.get("path", "")
++            if not file_path:
++                return {"error": "Path is required"}
++            if not file_path.startswith("/"):
++                file_path = f"/{file_path}"
++
++            content = input.get("content", "")
++            if not isinstance(content, str):
++                return {"error": "Content must be a string"}
++            
++            content_size = len(content.encode("utf-8"))
++            if content_size > MAX_EDIT_FILE_SIZE:
++                return {"error": "File exceeds 1 MB and cannot be edited"}
++            
++            res = await runtime.call_development_function(save_file, file_path, content)
++            if not res:
++                return {"error": "Failed to save file"}
++
++            return {"ok": True}
++        except Exception as e:
++            # Extract clean error message from exception
++            # RPC calls may return full tracebacks in exception strings
++            return {"error": self._extract_error_message(str(e))}
++
++
++async def load_file(file_path: str) -> dict:
++    browser = FileBrowser()
++    full_path = browser.get_full_path(file_path)
++
++    if os.path.isdir(full_path):
++        raise Exception("Path points to a directory")
++
++    size = os.path.getsize(full_path)
++    if size > MAX_EDIT_FILE_SIZE:
++        raise Exception("File exceeds 1 MB and cannot be edited")
++
++    # Binary detection: only sample the first ~10KB (per backend rules)
++    if files.is_probably_binary_file(full_path, sample_size=BINARY_SAMPLE_SIZE):
++        raise Exception("Binary file detected; editing is not supported")
++
++    mime_type, _ = mimetypes.guess_type(full_path)
++    try:
++        with open(full_path, "r", encoding="utf-8", errors="strict") as file:
++            content = file.read()
++    except UnicodeDecodeError:
++        raise Exception("Unable to decode file as UTF-8; editing is not supported")
++
++    return {
++        "path": file_path,
++        "name": os.path.basename(full_path),
++        "mime_type": mime_type or "text/plain",
++        "content": content,
++    }
++
++
++def save_file(file_path: str, content: str) -> bool:
++    browser = FileBrowser()
++    return browser.save_text_file(file_path, content)
+diff --git a/api/file_info.py b/api/file_info.py
+new file mode 100644
+index 00000000..9f2a9d66
+--- /dev/null
++++ b/api/file_info.py
+@@ -0,0 +1,51 @@
++import os
++from helpers.api import ApiHandler, Input, Output, Request, Response
++from helpers import files, runtime
++from typing import TypedDict
++
++class FileInfoApi(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        path = input.get("path", "")
++        info = await runtime.call_development_function(get_file_info, path)
++        return info
++
++class FileInfo(TypedDict):
++    input_path: str
++    abs_path: str
++    exists: bool
++    is_dir: bool
++    is_file: bool
++    is_link: bool
++    size: int
++    modified: float
++    created: float
++    permissions: int
++    dir_path: str
++    file_name: str
++    file_ext: str
++    message: str
++
++async def get_file_info(path: str) -> FileInfo:
++    abs_path = files.get_abs_path(path)
++    exists = os.path.exists(abs_path)
++    message = ""
++
++    if not exists:
++        message = f"File {path} not found."
++
++    return {
++        "input_path": path,
++        "abs_path": abs_path,
++        "exists": exists,
++        "is_dir": os.path.isdir(abs_path) if exists else False,
++        "is_file": os.path.isfile(abs_path) if exists else False,
++        "is_link": os.path.islink(abs_path) if exists else False,
++        "size": os.path.getsize(abs_path) if exists else 0,
++        "modified": os.path.getmtime(abs_path) if exists else 0,
++        "created": os.path.getctime(abs_path) if exists else 0,
++        "permissions": os.stat(abs_path).st_mode if exists else 0,
++        "dir_path": os.path.dirname(abs_path),
++        "file_name": os.path.basename(abs_path),
++        "file_ext": os.path.splitext(abs_path)[1],
++        "message": message
++    }
+\ No newline at end of file
+diff --git a/api/get_work_dir_files.py b/api/get_work_dir_files.py
+new file mode 100644
+index 00000000..7e8e99c7
+--- /dev/null
++++ b/api/get_work_dir_files.py
+@@ -0,0 +1,29 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers.file_browser import FileBrowser
++from helpers import runtime, files
++
++class GetWorkDirFiles(ApiHandler):
++
++    @classmethod
++    def get_methods(cls):
++        return ["GET"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        current_path = request.args.get("path", "")
++        if current_path == "$WORK_DIR":
++            # if runtime.is_development():
++            #     current_path = "work_dir"
++            # else:
++            #     current_path = "root"
++            current_path = "/a0"
++
++        # browser = FileBrowser()
++        # result = browser.get_files(current_path)
++        result = await runtime.call_development_function(get_files, current_path)
++
++        return {"data": result}
++
++
++async def get_files(path):
++    browser = FileBrowser()
++    return browser.get_files(path)
+diff --git a/api/health.py b/api/health.py
+new file mode 100644
+index 00000000..3eb8c105
+--- /dev/null
++++ b/api/health.py
+@@ -0,0 +1,26 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import errors, git
++
++class HealthCheck(ApiHandler):
++
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["GET", "POST"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        gitinfo = None
++        error = None
++        try:
++            gitinfo = git.get_git_info()
++        except Exception as e:
++            error = errors.error_text(e)
++
++        return {"gitinfo": gitinfo, "error": error}
+diff --git a/api/history_get.py b/api/history_get.py
+new file mode 100644
+index 00000000..1ee9c7e6
+--- /dev/null
++++ b/api/history_get.py
+@@ -0,0 +1,15 @@
++from helpers.api import ApiHandler, Request, Response
++
++
++class GetHistory(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        ctxid = input.get("context", [])
++        context = self.use_context(ctxid)
++        agent = context.streaming_agent or context.agent0
++        history = agent.history.output_text()
++        size = agent.history.get_tokens()
++
++        return {
++            "history": history,
++            "tokens": size
++        }
+\ No newline at end of file
+diff --git a/api/image_get.py b/api/image_get.py
+new file mode 100644
+index 00000000..0b4267a4
+--- /dev/null
++++ b/api/image_get.py
+@@ -0,0 +1,157 @@
++import base64
++import os
++from helpers.api import ApiHandler, Request, Response, send_file
++from helpers import files, runtime
++import io
++from mimetypes import guess_type
++
++
++class ImageGet(ApiHandler):
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["GET"]
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # input data
++        path = input.get("path", request.args.get("path", ""))
++        metadata = (
++            input.get("metadata", request.args.get("metadata", "false")).lower()
++            == "true"
++        )
++
++        if not path:
++            raise ValueError("No path provided")
++
++        # no real need to check, we have the extension filter in place
++        # check if path is within base directory
++        # if runtime.is_development():
++        #     in_base = files.is_in_base_dir(files.fix_dev_path(path))
++        # else:
++        #     in_base = files.is_in_base_dir(path)
++        # if not in_base and not files.is_in_dir(path, "/root"):
++        #     raise ValueError("Path is outside of allowed directory")
++
++        # get file extension and info
++        file_ext = os.path.splitext(path)[1].lower()
++        filename = os.path.basename(path)
++
++        # list of allowed image extensions
++        image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico", ".svgz"]
++
++        # # If metadata is requested, return file information
++        # if metadata:
++        #     return _get_file_metadata(path, filename, file_ext, image_extensions)
++       
++        if file_ext in image_extensions:
++
++            # in development environment, try to serve the image from local file system if exists, otherwise from docker
++            if runtime.is_development():
++                if files.exists(path):
++                    response = send_file(path)
++                elif await runtime.call_development_function(files.exists, path):
++                    b64_content = await runtime.call_development_function(
++                        files.read_file_base64, path
++                    )
++                    file_content = base64.b64decode(b64_content)
++                    mime_type, _ = guess_type(filename)
++                    if not mime_type:
++                        mime_type = "application/octet-stream"
++                    response = send_file(
++                        io.BytesIO(file_content),
++                        mimetype=mime_type,
++                        as_attachment=False,
++                        download_name=filename,
++                    )
++                else:
++                    response = _send_fallback_icon("image")
++            else:
++                if files.exists(path):
++                    response = send_file(path)
++                else:
++                    response = _send_fallback_icon("image")
++
++            # Add cache headers for better device sync performance
++            response.headers["Cache-Control"] = "public, max-age=3600"
++            response.headers["X-File-Type"] = "image"
++            response.headers["X-File-Name"] = filename
++            return response
++        else:
++            # Handle non-image files with fallback icons
++            return _send_file_type_icon(file_ext, filename)
++
++
++def _send_file_type_icon(file_ext, filename=None):
++    """Return appropriate icon for file type"""
++
++    # Map file extensions to icon names
++    icon_mapping = {
++        # Archive files
++        ".zip": "archive",
++        ".rar": "archive",
++        ".7z": "archive",
++        ".tar": "archive",
++        ".gz": "archive",
++        # Document files
++        ".pdf": "document",
++        ".doc": "document",
++        ".docx": "document",
++        ".txt": "document",
++        ".rtf": "document",
++        ".odt": "document",
++        # Code files
++        ".py": "code",
++        ".js": "code",
++        ".html": "code",
++        ".css": "code",
++        ".json": "code",
++        ".xml": "code",
++        ".md": "code",
++        ".yml": "code",
++        ".yaml": "code",
++        ".sql": "code",
++        ".sh": "code",
++        ".bat": "code",
++        # Spreadsheet files
++        ".xls": "document",
++        ".xlsx": "document",
++        ".csv": "document",
++        # Presentation files
++        ".ppt": "document",
++        ".pptx": "document",
++        ".odp": "document",
++    }
++
++    # Get icon name, default to 'file' if not found
++    icon_name = icon_mapping.get(file_ext, "file")
++
++    response = _send_fallback_icon(icon_name)
++
++    # Add headers for device sync
++    if hasattr(response, "headers"):
++        response.headers["Cache-Control"] = (
++            "public, max-age=86400"  # Cache icons for 24 hours
++        )
++        response.headers["X-File-Type"] = "icon"
++        response.headers["X-Icon-Type"] = icon_name
++        if filename:
++            response.headers["X-File-Name"] = filename
++
++    return response
++
++
++def _send_fallback_icon(icon_name):
++    """Return fallback icon from public directory"""
++
++    # Path to public icons
++    icon_path = files.get_abs_path(f"webui/public/{icon_name}.svg")
++
++    # Check if specific icon exists, fallback to generic file icon
++    if not os.path.exists(icon_path):
++        icon_path = files.get_abs_path("webui/public/file.svg")
++
++    # Final fallback if file.svg doesn't exist
++    if not os.path.exists(icon_path):
++        raise ValueError(f"Fallback icon not found: {icon_path}")
++
++    return send_file(icon_path, mimetype="image/svg+xml")
+diff --git a/api/load_webui_extensions.py b/api/load_webui_extensions.py
+new file mode 100644
+index 00000000..45be7a7a
+--- /dev/null
++++ b/api/load_webui_extensions.py
+@@ -0,0 +1,20 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import extension
++
++
++class LoadWebuiExtensions(ApiHandler):
++    """
++    API endpoint for Welcome Screen banners.
++    Add checks as extension scripts in python/extensions/banners/ or usr/extensions/banners/
++    """
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        extension_point = input.get("extension_point", [])
++        filters = input.get("filters", [])
++
++        if not extension_point:
++            return Response(status=400, response="Missing extension_point")
++        
++        exts = extension.get_webui_extensions(agent=None, extension_point=extension_point, filters=filters)
++        
++        return {"extensions": exts or []}
+diff --git a/api/logout.py b/api/logout.py
+new file mode 100644
+index 00000000..8d68254d
+--- /dev/null
++++ b/api/logout.py
+@@ -0,0 +1,15 @@
++from helpers.api import ApiHandler, Request, session
++
++
++class ApiLogout(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict:
++        try:
++            session.clear()
++        except Exception:
++            session.pop("authentication", None)
++            session.pop("csrf_token", None)
++        return {"ok": True}
+diff --git a/api/mcp_server_get_detail.py b/api/mcp_server_get_detail.py
+new file mode 100644
+index 00000000..bc5552c4
+--- /dev/null
++++ b/api/mcp_server_get_detail.py
+@@ -0,0 +1,17 @@
++from helpers.api import ApiHandler, Request, Response
++from typing import Any
++
++from helpers.mcp_handler import MCPConfig
++
++
++class McpServerGetDetail(ApiHandler):
++    async def process(self, input: dict[Any, Any], request: Request) -> dict[Any, Any] | Response:
++        
++        # try:
++            server_name = input.get("server_name")
++            if not server_name:
++                return {"success": False, "error": "Missing server_name"}
++            detail = MCPConfig.get_instance().get_server_detail(server_name)
++            return {"success": True, "detail": detail}
++        # except Exception as e:
++        #     return {"success": False, "error": str(e)}
+diff --git a/api/mcp_server_get_log.py b/api/mcp_server_get_log.py
+new file mode 100644
+index 00000000..3305430e
+--- /dev/null
++++ b/api/mcp_server_get_log.py
+@@ -0,0 +1,17 @@
++from helpers.api import ApiHandler, Request, Response
++from typing import Any
++
++from helpers.mcp_handler import MCPConfig
++
++
++class McpServerGetLog(ApiHandler):
++    async def process(self, input: dict[Any, Any], request: Request) -> dict[Any, Any] | Response:
++        
++        # try:
++            server_name = input.get("server_name")
++            if not server_name:
++                return {"success": False, "error": "Missing server_name"}
++            log = MCPConfig.get_instance().get_server_log(server_name)
++            return {"success": True, "log": log}
++        # except Exception as e:
++        #     return {"success": False, "error": str(e)}
+diff --git a/api/mcp_servers_apply.py b/api/mcp_servers_apply.py
+new file mode 100644
+index 00000000..7ea5275d
+--- /dev/null
++++ b/api/mcp_servers_apply.py
+@@ -0,0 +1,24 @@
++import time
++from helpers.api import ApiHandler, Request, Response
++
++from typing import Any
++
++from helpers.mcp_handler import MCPConfig
++from helpers.settings import set_settings_delta
++
++
++class McpServersApply(ApiHandler):
++    async def process(self, input: dict[Any, Any], request: Request) -> dict[Any, Any] | Response:
++        mcp_servers = input["mcp_servers"]
++        try:
++            # MCPConfig.update(mcp_servers) # done in settings automatically
++            set_settings_delta({"mcp_servers": "[]"}) # to force reinitialization
++            set_settings_delta({"mcp_servers": mcp_servers})
++
++            time.sleep(1) # wait at least a second
++            # MCPConfig.wait_for_lock() # wait until config lock is released
++            status = MCPConfig.get_instance().get_servers_status()
++            return {"success": True, "status": status}
++
++        except Exception as e:
++            return {"success": False, "error": str(e)}
+diff --git a/api/mcp_servers_status.py b/api/mcp_servers_status.py
+new file mode 100644
+index 00000000..20f8a64c
+--- /dev/null
++++ b/api/mcp_servers_status.py
+@@ -0,0 +1,15 @@
++from helpers.api import ApiHandler, Request, Response
++
++from typing import Any
++
++from helpers.mcp_handler import MCPConfig
++
++
++class McpServersStatuss(ApiHandler):
++    async def process(self, input: dict[Any, Any], request: Request) -> dict[Any, Any] | Response:
++        
++        # try:
++            status = MCPConfig.get_instance().get_servers_status()
++            return {"success": True, "status": status}
++        # except Exception as e:
++        #     return {"success": False, "error": str(e)}
+diff --git a/api/message.py b/api/message.py
+new file mode 100644
+index 00000000..7eaef1d5
+--- /dev/null
++++ b/api/message.py
+@@ -0,0 +1,71 @@
++from agent import AgentContext, UserMessage
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import files, extension, message_queue as mq
++import os
++from helpers.security import safe_filename
++from helpers.defer import DeferredTask
++
++
++class Message(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        task, context = await self.communicate(input=input, request=request)
++        return await self.respond(task, context)
++
++    async def respond(self, task: DeferredTask, context: AgentContext):
++        result = await task.result()  # type: ignore
++        return {
++            "message": result,
++            "context": context.id,
++        }
++
++    async def communicate(self, input: dict, request: Request):
++        # Handle both JSON and multipart/form-data
++        if request.content_type.startswith("multipart/form-data"):
++            text = request.form.get("text", "")
++            ctxid = request.form.get("context", "")
++            message_id = request.form.get("message_id", None)
++            attachments = request.files.getlist("attachments")
++            attachment_paths = []
++
++            upload_folder_int = "/a0/usr/uploads"
++            upload_folder_ext = files.get_abs_path("usr/uploads") # for development environment
++
++            if attachments:
++                os.makedirs(upload_folder_ext, exist_ok=True)
++                for attachment in attachments:
++                    if attachment.filename is None:
++                        continue
++                    filename = safe_filename(attachment.filename)
++                    if not filename:
++                        continue
++                    save_path = files.get_abs_path(upload_folder_ext, filename)
++                    attachment.save(save_path)
++                    attachment_paths.append(os.path.join(upload_folder_int, filename))
++        else:
++            # Handle JSON request as before
++            input_data = request.get_json()
++            text = input_data.get("text", "")
++            ctxid = input_data.get("context", "")
++            message_id = input_data.get("message_id", None)
++            attachment_paths = []
++
++        # Now process the message
++        message = text
++
++        # Obtain agent context
++        context = self.use_context(ctxid)
++
++        # call extension point, alow it to modify data
++        data = { "message": message, "attachment_paths": attachment_paths }
++        await extension.call_extensions_async("user_message_ui", agent=context.get_agent(), data=data)
++        message = data.get("message", "")
++        attachment_paths = data.get("attachment_paths", [])
++
++        # Store attachments in agent data
++        # context.agent0.set_data("attachments", attachment_paths)
++
++        # Log to console and UI using helper function
++        mq.log_user_message(context, message, attachment_paths, message_id)
++
++        return context.communicate(UserMessage(message, attachment_paths)), context
+diff --git a/api/message_async.py b/api/message_async.py
+new file mode 100644
+index 00000000..f101af71
+--- /dev/null
++++ b/api/message_async.py
+@@ -0,0 +1,11 @@
++from agent import AgentContext
++from helpers.defer import DeferredTask
++from api.message import Message
++
++
++class MessageAsync(Message):
++    async def respond(self, task: DeferredTask, context: AgentContext):
++        return {
++            "message": "Message received.",
++            "context": context.id,
++        }
+diff --git a/api/message_queue_add.py b/api/message_queue_add.py
+new file mode 100644
+index 00000000..b7fcaae7
+--- /dev/null
++++ b/api/message_queue_add.py
+@@ -0,0 +1,24 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import message_queue as mq
++from agent import AgentContext
++from helpers.state_monitor_integration import mark_dirty_for_context
++
++
++class MessageQueueAdd(ApiHandler):
++    """Add a message to the queue."""
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        context = AgentContext.get(input.get("context", ""))
++        if not context:
++            return Response("Context not found", status=404)
++
++        text = input.get("text", "").strip()
++        attachments = input.get("attachments", [])  # filenames from /upload API
++        item_id = input.get("item_id")
++
++        if not text and not attachments:
++            return Response("Empty message", status=400)
++
++        item = mq.add(context, text, attachments, item_id)
++        mark_dirty_for_context(context.id, reason="message_queue_add")
++        return {"ok": True, "item_id": item["id"], "queue_length": len(mq.get_queue(context))}
+diff --git a/api/message_queue_remove.py b/api/message_queue_remove.py
+new file mode 100644
+index 00000000..5dff225b
+--- /dev/null
++++ b/api/message_queue_remove.py
+@@ -0,0 +1,18 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import message_queue as mq
++from agent import AgentContext
++from helpers.state_monitor_integration import mark_dirty_for_context
++
++class MessageQueueRemove(ApiHandler):
++    """Remove message(s) from queue."""
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        context = AgentContext.get(input.get("context", ""))
++        if not context:
++            return Response("Context not found", status=404)
++
++        item_id = input.get("item_id")  # None means clear all
++        remaining = mq.remove(context, item_id)
++        mark_dirty_for_context(context.id, reason="message_queue_remove")
++
++        return {"ok": True, "remaining": remaining}
+diff --git a/api/message_queue_send.py b/api/message_queue_send.py
+new file mode 100644
+index 00000000..ac1cb165
+--- /dev/null
++++ b/api/message_queue_send.py
+@@ -0,0 +1,31 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import message_queue as mq
++from agent import AgentContext
++from helpers.state_monitor_integration import mark_dirty_for_context
++
++class MessageQueueSend(ApiHandler):
++    """Send queued message(s) immediately."""
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        context = AgentContext.get(input.get("context", ""))
++        if not context:
++            return Response("Context not found", status=404)
++
++        if not mq.has_queue(context):
++            return {"ok": True, "message": "Queue empty"}
++
++        item_id = input.get("item_id")
++        send_all = input.get("send_all", False)
++
++        if send_all:
++            count = mq.send_all_aggregated(context)
++            return {"ok": True, "sent_count": count}
++
++        # Send single item
++        item = mq.pop_item(context, item_id) if item_id else mq.pop_first(context)
++        if not item:
++            return Response("Item not found", status=404)
++
++        mq.send_message(context, item)
++        mark_dirty_for_context(context.id, reason="message_queue_send")
++        return {"ok": True, "sent_item_id": item["id"]}
+diff --git a/api/notification_create.py b/api/notification_create.py
+new file mode 100644
+index 00000000..b439f783
+--- /dev/null
++++ b/api/notification_create.py
+@@ -0,0 +1,67 @@
++from helpers.api import ApiHandler
++from flask import Request, Response
++from helpers.notification import NotificationManager, NotificationPriority, NotificationType
++
++
++class NotificationCreate(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Extract notification data
++        notification_type = input.get("type", NotificationType.INFO.value)
++        priority = input.get("priority", NotificationPriority.NORMAL.value)
++        message = input.get("message", "")
++        title = input.get("title", "")
++        detail = input.get("detail", "")
++        display_time = input.get("display_time", 3)  # Default to 3 seconds
++        group = input.get("group", "")  # Group parameter for notification grouping
++        notification_id = input.get("id", "")
++
++        # Validate required fields
++        if not message:
++            return {"success": False, "error": "Message is required"}
++
++        # Validate display_time
++        try:
++            display_time = int(display_time)
++            if display_time <= 0:
++                display_time = 3  # Reset to default if invalid
++        except (ValueError, TypeError):
++            display_time = 3  # Reset to default if not convertible to int
++
++        # Validate notification type
++        try:
++            if isinstance(notification_type, str):
++                notification_type = NotificationType(notification_type.lower())
++        except ValueError:
++            return {
++                "success": False,
++                "error": f"Invalid notification type: {notification_type}",
++            }
++
++        # Create notification using the appropriate helper method
++        try:
++            notification = NotificationManager.send_notification(
++                notification_type,
++                priority,
++                message,
++                title,
++                detail,
++                display_time,
++                group,
++                notification_id,
++            )
++
++            return {
++                "success": True,
++                "notification_id": notification.id,
++                "message": "Notification created successfully",
++            }
++
++        except Exception as e:
++            return {
++                "success": False,
++                "error": f"Failed to create notification: {str(e)}",
++            }
+diff --git a/api/notifications_clear.py b/api/notifications_clear.py
+new file mode 100644
+index 00000000..336c5ec5
+--- /dev/null
++++ b/api/notifications_clear.py
+@@ -0,0 +1,18 @@
++from helpers.api import ApiHandler
++from flask import Request, Response
++from agent import AgentContext
++
++
++class NotificationsClear(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Get the global notification manager
++        notification_manager = AgentContext.get_notification_manager()
++
++        # Clear all notifications
++        notification_manager.clear_all()
++
++        return {"success": True, "message": "All notifications cleared"}
+diff --git a/api/notifications_history.py b/api/notifications_history.py
+new file mode 100644
+index 00000000..c840d574
+--- /dev/null
++++ b/api/notifications_history.py
+@@ -0,0 +1,21 @@
++from helpers.api import ApiHandler
++from flask import Request, Response
++from agent import AgentContext
++
++
++class NotificationsHistory(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        # Get the global notification manager
++        notification_manager = AgentContext.get_notification_manager()
++
++        # Return all notifications for history modal
++        notifications = notification_manager.output_all()
++        return {
++            "notifications": notifications,
++            "guid": notification_manager.guid,
++            "count": len(notifications),
++        }
+diff --git a/api/notifications_mark_read.py b/api/notifications_mark_read.py
+new file mode 100644
+index 00000000..4cf1c162
+--- /dev/null
++++ b/api/notifications_mark_read.py
+@@ -0,0 +1,34 @@
++from helpers.api import ApiHandler
++from flask import Request, Response
++from agent import AgentContext
++
++
++class NotificationsMarkRead(ApiHandler):
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return True
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        notification_ids = input.get("notification_ids", [])
++        mark_all = input.get("mark_all", False)
++
++        notification_manager = AgentContext.get_notification_manager()
++
++        if mark_all:
++            notification_manager.mark_all_read()
++            return {"success": True, "message": "All notifications marked as read"}
++
++        if not notification_ids:
++            return {"success": False, "error": "No notification IDs provided"}
++
++        if not isinstance(notification_ids, list):
++            return {"success": False, "error": "notification_ids must be a list"}
++
++        # Mark specific notifications as read
++        marked_count = notification_manager.mark_read_by_ids(notification_ids)
++
++        return {
++            "success": True,
++            "marked_count": marked_count,
++            "message": f"Marked {marked_count} notifications as read"
++        }
+diff --git a/api/nudge.py b/api/nudge.py
+new file mode 100644
+index 00000000..d463c06d
+--- /dev/null
++++ b/api/nudge.py
+@@ -0,0 +1,18 @@
++from helpers.api import ApiHandler, Request, Response
++
++class Nudge(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        ctxid = input.get("ctxid", "")
++        if not ctxid:
++            raise Exception("No context id provided")
++
++        context = self.use_context(ctxid)
++        context.nudge()
++
++        msg = "Process reset, agent nudged."
++        context.log.log(type="info", content=msg)
++        
++        return {
++            "message": msg,
++            "ctxid": context.id,
++        }
+\ No newline at end of file
+diff --git a/api/pause.py b/api/pause.py
+new file mode 100644
+index 00000000..b30929b7
+--- /dev/null
++++ b/api/pause.py
+@@ -0,0 +1,18 @@
++from helpers.api import ApiHandler, Request, Response
++
++
++class Pause(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++            # input data
++            paused = input.get("paused", False)
++            ctxid = input.get("context", "")
++
++            # context instance - get or create
++            context = self.use_context(ctxid)
++
++            context.paused = paused
++
++            return {
++                "message": "Agent paused." if paused else "Agent unpaused.",
++                "pause": paused,
++            }    
+diff --git a/api/plugins.py b/api/plugins.py
+new file mode 100644
+index 00000000..a2c96fc1
+--- /dev/null
++++ b/api/plugins.py
+@@ -0,0 +1,339 @@
++import json
++import os
++import subprocess
++import sys
++from datetime import datetime, timezone
++
++from helpers.api import ApiHandler, Request, Response
++from helpers import plugins, files, extension
++
++
++class Plugins(ApiHandler):
++    """
++    Core plugin management API.
++    Actions: get_config, save_config
++    """
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        action = input.get("action", "")
++
++        # Accept legacy aliases during migration.
++        if action == "get_config":
++            return self._get_config(input)
++
++        if action == "get_toggle_status":
++            return self._get_toggle_status(input)
++
++        if action == "list_configs":
++            return self._list_configs(input)
++
++        if action == "delete_config":
++            return self._delete_config(input)
++
++        if action == "delete_plugin":
++            return self._delete_plugin(input)
++
++        if action == "get_default_config":
++            return self._get_default_config(input)
++
++        if action == "save_config":
++            return self._save_config(input)
++
++        if action == "toggle_plugin":
++            return self._toggle_plugin(input)
++
++        if action == "get_doc":
++            return self._get_doc(input)
++
++        if action == "run_init_script":
++            return self._run_init_script(input)
++
++        if action == "get_init_exec":
++            return self._get_init_exec(input)
++
++        return Response(status=400, response=f"Unknown action: {action}")
++
++    @extension.extensible
++    def _get_config(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        project_name = input.get("project_name", "")
++        agent_profile = input.get("agent_profile", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++
++        result = plugins.find_plugin_assets(
++            plugins.CONFIG_FILE_NAME,
++            plugin_name=plugin_name,
++            project_name=project_name,
++            agent_profile=agent_profile,
++            only_first=True,
++        )
++        if result:
++            entry = result[0]
++            path = entry.get("path", "")
++            settings = files.read_file_json(path) if path else {}
++            loaded_project_name = entry.get("project_name", "")
++            loaded_agent_profile = entry.get("agent_profile", "")
++        else:
++            settings = plugins.get_plugin_config(plugin_name, agent=None) or {}
++            default_path = files.get_abs_path(
++                plugins.find_plugin_dir(plugin_name), plugins.CONFIG_DEFAULT_FILE_NAME
++            )
++            path = default_path if files.exists(default_path) else ""
++            loaded_project_name = ""
++            loaded_agent_profile = ""
++
++        return {
++            "ok": True,
++            "loaded_path": path,
++            "loaded_project_name": loaded_project_name,
++            "loaded_agent_profile": loaded_agent_profile,
++            "data": settings,
++        }
++
++    @extension.extensible
++    def _get_toggle_status(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        project_name = input.get("project_name", "")
++        agent_profile = input.get("agent_profile", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++
++        meta = plugins.get_plugin_meta(plugin_name)
++        if not meta:
++            return Response(status=404, response="Plugin not found")
++
++        if meta.always_enabled:
++            return {
++                "ok": True,
++                "status": "enabled",
++                "loaded_project_name": project_name,
++                "loaded_agent_profile": agent_profile,
++                "loaded_path": "",
++            }
++
++        result = plugins.find_plugin_assets(
++            plugins.TOGGLE_FILE_PATTERN,
++            plugin_name=plugin_name,
++            project_name=project_name,
++            agent_profile=agent_profile,
++            only_first=True,
++        )
++
++        if result:
++            entry = result[0]
++            path = entry.get("path", "")
++            status = (
++                "enabled" if path.endswith(plugins.ENABLED_FILE_NAME) else "disabled"
++            )
++            return {
++                "ok": True,
++                "status": status,
++                "loaded_project_name": entry.get("project_name", ""),
++                "loaded_agent_profile": entry.get("agent_profile", ""),
++                "loaded_path": path,
++            }
++
++        return {
++            "ok": True,
++            "status": "enabled",
++            "loaded_project_name": "",
++            "loaded_agent_profile": "",
++            "loaded_path": "",
++        }
++
++    @extension.extensible
++    def _list_configs(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        asset_type = input.get("asset_type", "config")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++
++        configs = plugins.find_plugin_assets(
++            (
++                plugins.CONFIG_FILE_NAME
++                if asset_type == "config"
++                else plugins.TOGGLE_FILE_PATTERN
++            ),
++            plugin_name=plugin_name,
++            project_name="*",
++            agent_profile="*",
++            only_first=False,
++        )
++
++        return {"ok": True, "data": configs}
++
++    @extension.extensible
++    def _delete_config(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        path = input.get("path", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++        if not path:
++            return Response(status=400, response="Missing path")
++
++        configs = plugins.find_plugin_assets(
++            plugins.CONFIG_FILE_NAME,
++            plugin_name=plugin_name,
++            project_name="*",
++            agent_profile="*",
++            only_first=False,
++        )
++        toggles = plugins.find_plugin_assets(
++            plugins.TOGGLE_FILE_PATTERN,
++            plugin_name=plugin_name,
++            project_name="*",
++            agent_profile="*",
++            only_first=False,
++        )
++        allowed_paths = {c.get("path", "") for c in configs + toggles}
++        if path not in allowed_paths:
++            return Response(status=400, response="Invalid path")
++
++        if not files.exists(path):
++            return {"ok": True}
++
++        try:
++            os.remove(path)
++        except Exception as e:
++            return Response(status=500, response=f"Failed to delete config: {str(e)}")
++
++        return {"ok": True}
++
++    @extension.extensible
++    def _delete_plugin(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++        try:
++            plugins.uninstall_plugin(plugin_name)
++        except FileNotFoundError as e:
++            return Response(status=404, response=str(e))
++        except ValueError as e:
++            return Response(status=400, response=str(e))
++        except Exception as e:
++            return Response(status=500, response=f"Failed to delete plugin: {str(e)}")
++        return {"ok": True}
++
++    @extension.extensible
++    def _get_default_config(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++        settings = plugins.get_default_plugin_config(plugin_name)
++        return {"ok": True, "data": settings or {}}
++
++    @extension.extensible
++    def _save_config(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        project_name = input.get("project_name", "")
++        agent_profile = input.get("agent_profile", "")
++        settings = input.get("settings", {})
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++        if not isinstance(settings, dict):
++            return Response(status=400, response="settings must be an object")
++        plugins.save_plugin_config(plugin_name, project_name, agent_profile, settings)
++        return {"ok": True}
++
++    @extension.extensible
++    def _toggle_plugin(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        enabled = input.get("enabled")
++        project_name = input.get("project_name", "")
++        agent_profile = input.get("agent_profile", "")
++        clear_overrides = bool(input.get("clear_overrides", False))
++
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++        if enabled is None:
++            return Response(status=400, response="Missing enabled state")
++
++        plugins.toggle_plugin(
++            plugin_name, bool(enabled), project_name, agent_profile, clear_overrides
++        )
++        return {"ok": True}
++
++    @extension.extensible
++    def _get_doc(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        doc = input.get("doc", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++        if doc not in ("readme", "license"):
++            return Response(status=400, response="doc must be 'readme' or 'license'")
++
++        plugin_dir = plugins.find_plugin_dir(plugin_name)
++        if not plugin_dir:
++            return Response(status=404, response="Plugin not found")
++
++        filename = "README.md" if doc == "readme" else "LICENSE"
++        file_path = files.get_abs_path(plugin_dir, filename)
++        if not files.exists(file_path):
++            return Response(status=404, response=f"{filename} not found")
++
++        return {"ok": True, "content": files.read_file(file_path), "filename": filename}
++
++    @extension.extensible
++    def _run_init_script(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++
++        plugin_dir = plugins.find_plugin_dir(plugin_name)
++        if not plugin_dir:
++            return Response(status=404, response="Plugin not found")
++
++        init_script = files.get_abs_path(plugin_dir, "initialize.py")
++        if not files.exists(init_script):
++            return Response(status=404, response="initialize.py not found")
++
++        executed_at = datetime.now(timezone.utc).isoformat()
++        try:
++            result = subprocess.run(
++                [sys.executable, init_script],
++                stdout=subprocess.PIPE,
++                stderr=subprocess.STDOUT,
++                text=True,
++                cwd=plugin_dir,
++                timeout=120,
++            )
++            exit_code = result.returncode
++            output = result.stdout or ""
++        except subprocess.TimeoutExpired:
++            exit_code = -1
++            output = "Error: script timed out after 120 seconds"
++        except Exception as e:
++            exit_code = -1
++            output = f"Error: {str(e)}"
++
++        exec_record = {"executed_at": executed_at, "exit_code": exit_code}
++        exec_path = plugins.determine_plugin_asset_path(
++            plugin_name, "", "", "init_exec.json"
++        )
++        if exec_path:
++            files.write_file(exec_path, json.dumps(exec_record))
++
++        return {
++            "ok": exit_code == 0,
++            "output": output,
++            "exit_code": exit_code,
++            "executed_at": executed_at,
++        }
++
++    @extension.extensible
++    def _get_init_exec(self, input: dict) -> dict | Response:
++        plugin_name = input.get("plugin_name", "")
++        if not plugin_name:
++            return Response(status=400, response="Missing plugin_name")
++
++        exec_path = plugins.determine_plugin_asset_path(
++            plugin_name, "", "", "init_exec.json"
++        )
++        if exec_path and files.exists(exec_path):
++            try:
++                data = json.loads(files.read_file(exec_path))
++                return {"ok": True, "data": data}
++            except Exception:
++                pass
++        return {"ok": True, "data": None}
+diff --git a/api/plugins_list.py b/api/plugins_list.py
+new file mode 100644
+index 00000000..cf7d52e3
+--- /dev/null
++++ b/api/plugins_list.py
+@@ -0,0 +1,13 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers import plugins
++
++class PluginsList(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        filter = input.get("filter", {})
++
++        custom = filter.get("custom", False)
++        builtin = filter.get("builtin", False)
++
++        plugin_list = plugins.get_enhanced_plugins_list(custom=custom, builtin=builtin)
++        
++        return {"ok": True, "plugins": [p.model_dump(mode="json") for p in plugin_list]}
+diff --git a/api/poll.py b/api/poll.py
+new file mode 100644
+index 00000000..519387b8
+--- /dev/null
++++ b/api/poll.py
+@@ -0,0 +1,14 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers.state_snapshot import build_snapshot
++
++
++class Poll(ApiHandler):
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        return await build_snapshot(
++            context=input.get("context"),
++            log_from=input.get("log_from", 0),
++            notifications_from=input.get("notifications_from", 0),
++            timezone=input.get("timezone"),
++        )
+diff --git a/api/projects.py b/api/projects.py
+new file mode 100644
+index 00000000..10fd8cc1
+--- /dev/null
++++ b/api/projects.py
+@@ -0,0 +1,148 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++from helpers import projects
++from helpers.notification import NotificationManager, NotificationType, NotificationPriority
++
++
++class Projects(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        action = input.get("action", "")
++        ctxid = input.get("context_id", None)
++
++        if ctxid:
++            _context = self.use_context(ctxid)
++
++        try:
++            if action == "list":
++                data = self.get_active_projects_list()
++            elif action == "list_options":
++                data = self.get_active_projects_options()
++            elif action == "load":
++                data = self.load_project(input.get("name", None))
++            elif action == "create":
++                data = self.create_project(input.get("project", None))
++            elif action == "clone":
++                data = self.clone_project(input.get("project", None))
++            elif action == "update":
++                data = self.update_project(input.get("project", None))
++            elif action == "delete":
++                data = self.delete_project(input.get("name", None))
++            elif action == "activate":
++                data = self.activate_project(ctxid, input.get("name", None))
++            elif action == "deactivate":
++                data = self.deactivate_project(ctxid)
++            elif action == "file_structure":
++                data = self.get_file_structure(input.get("name", None), input.get("settings"))
++            else:
++                raise Exception("Invalid action")
++
++            return {
++                "ok": True,
++                "data": data,
++            }
++        except Exception as e:
++            return {
++                "ok": False,
++                "error": str(e),
++            }
++
++    def get_active_projects_list(self):
++        return projects.get_active_projects_list()
++
++    def get_active_projects_options(self):
++        items = projects.get_active_projects_list() or []
++        return [
++            {"key": p.get("name", ""), "label": p.get("title", "") or p.get("name", "")}
++            for p in items
++            if p.get("name")
++        ]
++
++    def create_project(self, project: dict|None):
++        if project is None:
++            raise Exception("Project data is required")
++        data = projects.BasicProjectData(**project)
++        name = projects.create_project(project["name"], data)
++        return projects.load_edit_project_data(name)
++
++    def clone_project(self, project: dict|None):
++        if project is None:
++            raise Exception("Project data is required")
++        git_url = project.get("git_url", "")
++        git_token = project.get("git_token", "")
++        if not git_url:
++            raise Exception("Git URL is required")
++        
++        # Progress notification
++        notification = NotificationManager.send_notification(
++            NotificationType.PROGRESS,
++            NotificationPriority.NORMAL,
++            f"Cloning repository...",
++            "Git Clone",
++            display_time=999,
++            group="git_clone"
++        )
++        
++        try:
++            data = projects.BasicProjectData(**project)
++            name = projects.clone_git_project(project["name"], git_url, git_token, data)
++            
++            # Success notification
++            NotificationManager.send_notification(
++                NotificationType.SUCCESS,
++                NotificationPriority.NORMAL,
++                f"Repository cloned successfully",
++                "Git Clone",
++                display_time=3,
++                group="git_clone"
++            )
++            return projects.load_edit_project_data(name)
++        except Exception as e:
++            # Error notification
++            NotificationManager.send_notification(
++                NotificationType.ERROR,
++                NotificationPriority.HIGH,
++                f"Clone failed: {str(e)}",
++                "Git Clone",
++                display_time=5,
++                group="git_clone"
++            )
++            raise
++
++    def load_project(self, name: str|None):
++        if name is None:
++            raise Exception("Project name is required")
++        return projects.load_edit_project_data(name)
++
++    def update_project(self, project: dict|None):
++        if project is None:
++            raise Exception("Project data is required")
++        data = projects.EditProjectData(**project)
++        name = projects.update_project(project["name"], data)
++        return projects.load_edit_project_data(name)
++
++    def delete_project(self, name: str|None):
++        if name is None:
++            raise Exception("Project name is required")
++        return projects.delete_project(name)
++
++    def activate_project(self, context_id: str|None, name: str|None):
++        if not context_id:
++            raise Exception("Context ID is required")
++        if not name:
++            raise Exception("Project name is required") 
++        return projects.activate_project(context_id, name)
++
++    def deactivate_project(self, context_id: str|None):
++        if not context_id:
++            raise Exception("Context ID is required")
++        return projects.deactivate_project(context_id)
++
++    def get_file_structure(self, name: str|None, settings: dict|None):
++        if not name:
++            raise Exception("Project name is required")
++        # project data
++        basic_data = projects.load_basic_project_data(name)
++        # override file structure settings
++        if settings:
++            basic_data["file_structure"] = settings # type: ignore
++        # get structure
++        return projects.get_file_structure(name, basic_data)
+\ No newline at end of file
+diff --git a/api/rename_work_dir_file.py b/api/rename_work_dir_file.py
+new file mode 100644
+index 00000000..5a05088d
+--- /dev/null
++++ b/api/rename_work_dir_file.py
+@@ -0,0 +1,54 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.file_browser import FileBrowser
++from helpers import runtime
++from api import get_work_dir_files
++
++
++class RenameWorkDirFile(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        try:
++            action = input.get("action", "rename")
++            new_name = (input.get("newName", "") or "").strip()
++            if not new_name:
++                return {"error": "New name is required"}
++
++            current_path = input.get("currentPath", "")
++
++            if action == "create-folder":
++                parent_path = input.get("parentPath", current_path)
++                if not parent_path:
++                    return {"error": "Parent path is required"}
++                res = await runtime.call_development_function(
++                    create_folder, parent_path, new_name
++                )
++            else:
++                file_path = input.get("path", "")
++                if not file_path:
++                    return {"error": "Path is required"}
++                if not file_path.startswith("/"):
++                    file_path = f"/{file_path}"
++                res = await runtime.call_development_function(
++                    rename_item, file_path, new_name
++                )
++
++            if res:
++                result = await runtime.call_development_function(
++                    get_work_dir_files.get_files, current_path
++                )
++                return {"data": result}
++
++            error_msg = "Failed to create folder" if action == "create-folder" else "Rename failed"
++            return {"error": error_msg}
++
++        except Exception as e:
++            return {"error": str(e)}
++
++
++async def rename_item(file_path: str, new_name: str) -> bool:
++    browser = FileBrowser()
++    return browser.rename_item(file_path, new_name)
++
++
++async def create_folder(parent_path: str, folder_name: str) -> bool:
++    browser = FileBrowser()
++    return browser.create_folder(parent_path, folder_name)
+diff --git a/api/restart.py b/api/restart.py
+new file mode 100644
+index 00000000..e5db07ad
+--- /dev/null
++++ b/api/restart.py
+@@ -0,0 +1,8 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import process
++
++class Restart(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        process.reload()
++        return Response(status=200)
+\ No newline at end of file
+diff --git a/api/rfc.py b/api/rfc.py
+new file mode 100644
+index 00000000..75968651
+--- /dev/null
++++ b/api/rfc.py
+@@ -0,0 +1,17 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import runtime
++
++class RFC(ApiHandler):
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        result = await runtime.handle_rfc(input) # type: ignore
++        return result
+diff --git a/api/scheduler_task_create.py b/api/scheduler_task_create.py
+new file mode 100644
+index 00000000..31522d37
+--- /dev/null
++++ b/api/scheduler_task_create.py
+@@ -0,0 +1,163 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.task_scheduler import (
++    TaskScheduler, ScheduledTask, AdHocTask, PlannedTask, TaskSchedule,
++    serialize_task, parse_task_schedule, parse_task_plan, TaskType
++)
++from helpers.projects import load_basic_project_data
++from helpers.localization import Localization
++from helpers.print_style import PrintStyle
++import random
++
++
++class SchedulerTaskCreate(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        """
++        Create a new task in the scheduler
++        """
++        printer = PrintStyle(italic=True, font_color="blue", padding=False)
++
++        # Get timezone from input (do not set if not provided, we then rely on poll() to set it)
++        if timezone := input.get("timezone", None):
++            Localization.get().set_timezone(timezone)
++
++        scheduler = TaskScheduler.get()
++        await scheduler.reload()
++
++        # Get common fields from input
++        name = input.get("name")
++        system_prompt = input.get("system_prompt", "")
++        prompt = input.get("prompt")
++        attachments = input.get("attachments", [])
++
++        requested_project_slug = input.get("project_name")
++        if isinstance(requested_project_slug, str):
++            requested_project_slug = requested_project_slug.strip() or None
++        else:
++            requested_project_slug = None
++
++        project_slug = requested_project_slug
++        project_color = None
++
++        if project_slug:
++            try:
++                metadata = load_basic_project_data(requested_project_slug)
++                project_color = metadata.get("color") or None
++            except Exception as exc:
++                printer.error(f"SchedulerTaskCreate: failed to load project '{project_slug}': {exc}")
++                return {"error": f"Saving project failed: {project_slug}"}
++
++        # Always dedicated context for scheduler tasks created by ui
++        task_context_id = None
++
++        # Check if schedule is provided (for ScheduledTask)
++        schedule = input.get("schedule", {})
++        token: str = input.get("token", "")
++
++        # Debug log the token value
++        printer.print(f"Token received from frontend: '{token}' (type: {type(token)}, length: {len(token) if token else 0})")
++
++        # Generate a random token if empty or not provided
++        if not token:
++            token = str(random.randint(1000000000000000000, 9999999999999999999))
++            printer.print(f"Generated new token: '{token}'")
++
++        plan = input.get("plan", {})
++
++        # Validate required fields
++        if not name or not prompt:
++            # return {"error": "Missing required fields: name, system_prompt, prompt"}
++            raise ValueError("Missing required fields: name, system_prompt, prompt")
++
++        task = None
++        if schedule:
++            # Create a scheduled task
++            # Handle different schedule formats (string or object)
++            if isinstance(schedule, str):
++                # Parse the string schedule
++                parts = schedule.split(' ')
++                task_schedule = TaskSchedule(
++                    minute=parts[0] if len(parts) > 0 else "*",
++                    hour=parts[1] if len(parts) > 1 else "*",
++                    day=parts[2] if len(parts) > 2 else "*",
++                    month=parts[3] if len(parts) > 3 else "*",
++                    weekday=parts[4] if len(parts) > 4 else "*"
++                )
++            elif isinstance(schedule, dict):
++                # Use our standardized parsing function
++                try:
++                    task_schedule = parse_task_schedule(schedule)
++                except ValueError as e:
++                    raise ValueError(str(e))
++            else:
++                raise ValueError("Invalid schedule format. Must be string or object.")
++
++            task = ScheduledTask.create(
++                name=name,
++                system_prompt=system_prompt,
++                prompt=prompt,
++                schedule=task_schedule,
++                attachments=attachments,
++                context_id=task_context_id,
++                timezone=timezone,
++                project_name=project_slug,
++                project_color=project_color,
++            )
++        elif plan:
++            # Create a planned task
++            try:
++                # Use our standardized parsing function
++                task_plan = parse_task_plan(plan)
++            except ValueError as e:
++                return {"error": str(e)}
++
++            task = PlannedTask.create(
++                name=name,
++                system_prompt=system_prompt,
++                prompt=prompt,
++                plan=task_plan,
++                attachments=attachments,
++                context_id=task_context_id,
++                project_name=project_slug,
++                project_color=project_color,
++            )
++        else:
++            # Create an ad-hoc task
++            printer.print(f"Creating AdHocTask with token: '{token}'")
++            task = AdHocTask.create(
++                name=name,
++                system_prompt=system_prompt,
++                prompt=prompt,
++                token=token,
++                attachments=attachments,
++                context_id=task_context_id,
++                project_name=project_slug,
++                project_color=project_color,
++            )
++            # Verify token after creation
++            if isinstance(task, AdHocTask):
++                printer.print(f"AdHocTask created with token: '{task.token}'")
++
++        # Add the task to the scheduler
++        await scheduler.add_task(task)
++
++        # Verify the task was added correctly - retrieve by UUID to check persistence
++        saved_task = scheduler.get_task_by_uuid(task.uuid)
++        if saved_task:
++            if saved_task.type == TaskType.AD_HOC and isinstance(saved_task, AdHocTask):
++                printer.print(f"Task verified after save, token: '{saved_task.token}'")
++            else:
++                printer.print("Task verified after save, not an adhoc task")
++        else:
++            printer.print("WARNING: Task not found after save!")
++
++        # Return the created task using our standardized serialization function
++        task_dict = serialize_task(task)
++
++        # Debug log the serialized task
++        if task_dict and task_dict.get('type') == 'adhoc':
++            printer.print(f"Serialized adhoc task, token in response: '{task_dict.get('token')}'")
++
++        return {
++            "ok": True,
++            "task": task_dict
++        }
+diff --git a/api/scheduler_task_delete.py b/api/scheduler_task_delete.py
+new file mode 100644
+index 00000000..80848948
+--- /dev/null
++++ b/api/scheduler_task_delete.py
+@@ -0,0 +1,53 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.task_scheduler import TaskScheduler, TaskState
++from helpers.localization import Localization
++from agent import AgentContext
++from helpers import persist_chat
++
++
++class SchedulerTaskDelete(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        """
++        Delete a task from the scheduler by ID
++        """
++        # Get timezone from input (do not set if not provided, we then rely on poll() to set it)
++        if timezone := input.get("timezone", None):
++            Localization.get().set_timezone(timezone)
++
++        scheduler = TaskScheduler.get()
++        await scheduler.reload()
++
++        # Get task ID from input
++        task_id: str = input.get("task_id", "")
++
++        if not task_id:
++            return {"error": "Missing required field: task_id"}
++
++        # Check if the task exists first
++        task = scheduler.get_task_by_uuid(task_id)
++        if not task:
++            return {"error": f"Task with ID {task_id} not found"}
++
++        context = None
++        if task.context_id:
++            context = self.use_context(task.context_id)
++
++        # If the task is running, update its state to IDLE first
++        if task.state == TaskState.RUNNING:
++            scheduler.cancel_running_task(task_id, terminate_thread=True)
++            if context:
++                context.reset()
++            # Update the state to IDLE so any ongoing processes know to terminate
++            await scheduler.update_task(task_id, state=TaskState.IDLE)
++            # Force a save to ensure the state change is persisted
++            await scheduler.save()
++
++        # This is a dedicated context for the task, so we remove it
++        if context and context.id == task.uuid:
++            AgentContext.remove(context.id)
++            persist_chat.remove_chat(context.id)
++
++        # Remove the task
++        await scheduler.remove_task_by_uuid(task_id)
++
++        return {"success": True, "message": f"Task {task_id} deleted successfully"}
+diff --git a/api/scheduler_task_run.py b/api/scheduler_task_run.py
+new file mode 100644
+index 00000000..205ab636
+--- /dev/null
++++ b/api/scheduler_task_run.py
+@@ -0,0 +1,65 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.task_scheduler import TaskScheduler, TaskState
++from helpers.print_style import PrintStyle
++from helpers.localization import Localization
++
++
++class SchedulerTaskRun(ApiHandler):
++
++    _printer: PrintStyle = PrintStyle(italic=True, font_color="green", padding=False)
++
++    async def process(self, input: Input, request: Request) -> Output:
++        """
++        Manually run a task from the scheduler by ID
++        """
++        # Get timezone from input (do not set if not provided, we then rely on poll() to set it)
++        if timezone := input.get("timezone", None):
++            Localization.get().set_timezone(timezone)
++
++        # Get task ID from input
++        task_id: str = input.get("task_id", "")
++
++        if not task_id:
++            return {"error": "Missing required field: task_id"}
++
++        self._printer.print(f"SchedulerTaskRun: On-Demand running task {task_id}")
++
++        scheduler = TaskScheduler.get()
++        await scheduler.reload()
++
++        # Check if the task exists first
++        task = scheduler.get_task_by_uuid(task_id)
++        if not task:
++            self._printer.error(f"SchedulerTaskRun: Task with ID '{task_id}' not found")
++            return {"error": f"Task with ID '{task_id}' not found"}
++
++        # Check if task is already running
++        if task.state == TaskState.RUNNING:
++            # Return task details along with error for better frontend handling
++            serialized_task = scheduler.serialize_task(task_id)
++            self._printer.error(f"SchedulerTaskRun: Task '{task_id}' is in state '{task.state}' and cannot be run")
++            return {
++                "error": f"Task '{task_id}' is in state '{task.state}' and cannot be run",
++                "task": serialized_task
++            }
++
++        # Run the task, which now includes atomic state checks and updates
++        try:
++            await scheduler.run_task_by_uuid(task_id)
++            self._printer.print(f"SchedulerTaskRun: Task '{task_id}' started successfully")
++            # Get updated task after run starts
++            serialized_task = scheduler.serialize_task(task_id)
++            if serialized_task:
++                return {
++                    "success": True,
++                    "message": f"Task '{task_id}' started successfully",
++                    "task": serialized_task
++                }
++            else:
++                return {"success": True, "message": f"Task '{task_id}' started successfully"}
++        except ValueError as e:
++            self._printer.error(f"SchedulerTaskRun: Task '{task_id}' failed to start: {str(e)}")
++            return {"error": str(e)}
++        except Exception as e:
++            self._printer.error(f"SchedulerTaskRun: Task '{task_id}' failed to start: {str(e)}")
++            return {"error": f"Failed to run task '{task_id}': {str(e)}"}
+diff --git a/api/scheduler_task_update.py b/api/scheduler_task_update.py
+new file mode 100644
+index 00000000..dc7401c7
+--- /dev/null
++++ b/api/scheduler_task_update.py
+@@ -0,0 +1,93 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.task_scheduler import (
++    TaskScheduler, ScheduledTask, AdHocTask, PlannedTask, TaskState,
++    serialize_task, parse_task_schedule, parse_task_plan
++)
++from helpers.localization import Localization
++
++
++class SchedulerTaskUpdate(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        """
++        Update an existing task in the scheduler
++        """
++        # Get timezone from input (do not set if not provided, we then rely on poll() to set it)
++        if timezone := input.get("timezone", None):
++            Localization.get().set_timezone(timezone)
++
++        scheduler = TaskScheduler.get()
++        await scheduler.reload()
++
++        # Get task ID from input
++        task_id: str = input.get("task_id", "")
++
++        if not task_id:
++            return {"error": "Missing required field: task_id"}
++
++        # Get the task to update
++        task = scheduler.get_task_by_uuid(task_id)
++
++        if not task:
++            return {"error": f"Task with ID {task_id} not found"}
++
++        # Update fields if provided using the task's update method
++        update_params = {}
++
++        if "name" in input:
++            update_params["name"] = input.get("name", "")
++
++        if "state" in input:
++            update_params["state"] = TaskState(input.get("state", TaskState.IDLE))
++
++        if "system_prompt" in input:
++            update_params["system_prompt"] = input.get("system_prompt", "")
++
++        if "prompt" in input:
++            update_params["prompt"] = input.get("prompt", "")
++
++        if "attachments" in input:
++            update_params["attachments"] = input.get("attachments", [])
++
++        if "project_name" in input or "project_color" in input:
++            return {"error": "Project changes are not allowed"}
++
++        # Update schedule if this is a scheduled task and schedule is provided
++        if isinstance(task, ScheduledTask) and "schedule" in input:
++            schedule_data = input.get("schedule", {})
++            try:
++                # Parse the schedule with timezone handling
++                task_schedule = parse_task_schedule(schedule_data)
++
++                # Set the timezone from the request if not already in schedule_data
++                if not schedule_data.get('timezone', None) and timezone:
++                    task_schedule.timezone = timezone
++
++                update_params["schedule"] = task_schedule
++            except ValueError as e:
++                return {"error": f"Invalid schedule format: {str(e)}"}
++        elif isinstance(task, AdHocTask) and "token" in input:
++            token_value = input.get("token", "")
++            if token_value:  # Only update if non-empty
++                update_params["token"] = token_value
++        elif isinstance(task, PlannedTask) and "plan" in input:
++            plan_data = input.get("plan", {})
++            try:
++                # Parse the plan data
++                task_plan = parse_task_plan(plan_data)
++                update_params["plan"] = task_plan
++            except ValueError as e:
++                return {"error": f"Invalid plan format: {str(e)}"}
++
++        # Use atomic update method to apply changes
++        updated_task = await scheduler.update_task(task_id, **update_params)
++
++        if not updated_task:
++            return {"error": f"Task with ID {task_id} not found or could not be updated"}
++
++        # Return the updated task using our standardized serialization function
++        task_dict = serialize_task(updated_task)
++
++        return {
++            "ok": True,
++            "task": task_dict
++        }
+diff --git a/api/scheduler_tasks_list.py b/api/scheduler_tasks_list.py
+new file mode 100644
+index 00000000..48dea38d
+--- /dev/null
++++ b/api/scheduler_tasks_list.py
+@@ -0,0 +1,29 @@
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.task_scheduler import TaskScheduler
++import traceback
++from helpers.print_style import PrintStyle
++from helpers.localization import Localization
++
++
++class SchedulerTasksList(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        """
++        List all tasks in the scheduler with their types
++        """
++        try:
++            # Get timezone from input (do not set if not provided, we then rely on poll() to set it)
++            if timezone := input.get("timezone", None):
++                Localization.get().set_timezone(timezone)
++
++            # Get task scheduler
++            scheduler = TaskScheduler.get()
++            await scheduler.reload()
++
++            # Use the scheduler's convenience method for task serialization
++            tasks_list = scheduler.serialize_all_tasks()
++
++            return {"ok": True, "tasks": tasks_list}
++
++        except Exception as e:
++            PrintStyle.error(f"Failed to list tasks: {str(e)} {traceback.format_exc()}")
++            return {"ok": False, "error": f"Failed to list tasks: {str(e)} {traceback.format_exc()}", "tasks": []}
+diff --git a/api/scheduler_tick.py b/api/scheduler_tick.py
+new file mode 100644
+index 00000000..f0414175
+--- /dev/null
++++ b/api/scheduler_tick.py
+@@ -0,0 +1,55 @@
++from datetime import datetime
++
++from helpers.api import ApiHandler, Input, Output, Request
++from helpers.print_style import PrintStyle
++from helpers.task_scheduler import TaskScheduler
++from helpers.localization import Localization
++
++
++class SchedulerTick(ApiHandler):
++    @classmethod
++    def requires_loopback(cls) -> bool:
++        return True
++
++    @classmethod
++    def requires_auth(cls) -> bool:
++        return False
++
++    @classmethod
++    def requires_csrf(cls) -> bool:
++        return False
++
++    async def process(self, input: Input, request: Request) -> Output:
++        # Get timezone from input (do not set if not provided, we then rely on poll() to set it)
++        if timezone := input.get("timezone", None):
++            Localization.get().set_timezone(timezone)
++
++        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
++        printer = PrintStyle(font_color="green", padding=False)
++        printer.print(f"Scheduler tick - API: {timestamp}")
++
++        # Get the task scheduler instance and print detailed debug info
++        scheduler = TaskScheduler.get()
++        await scheduler.reload()
++
++        tasks = scheduler.get_tasks()
++        tasks_count = len(tasks)
++
++        # Log information about the tasks
++        printer.print(f"Scheduler has {tasks_count} task(s)")
++        if tasks_count > 0:
++            for task in tasks:
++                printer.print(f"Task: {task.name} (UUID: {task.uuid}, State: {task.state})")
++
++        # Run the scheduler tick
++        await scheduler.tick()
++
++        # Get updated tasks after tick
++        serialized_tasks = scheduler.serialize_all_tasks()
++
++        return {
++            "scheduler": "tick",
++            "timestamp": timestamp,
++            "tasks_count": tasks_count,
++            "tasks": serialized_tasks
++        }
+diff --git a/api/settings_get.py b/api/settings_get.py
+new file mode 100644
+index 00000000..cf704705
+--- /dev/null
++++ b/api/settings_get.py
+@@ -0,0 +1,13 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import settings
++
++class GetSettings(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        backend = settings.get_settings()
++        out = settings.convert_out(backend)
++        return dict(out)
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["GET", "POST"]
+diff --git a/api/settings_set.py b/api/settings_set.py
+new file mode 100644
+index 00000000..21146605
+--- /dev/null
++++ b/api/settings_set.py
+@@ -0,0 +1,14 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import settings
++
++from typing import Any
++
++
++class SetSettings(ApiHandler):
++    async def process(self, input: dict[Any, Any], request: Request) -> dict[Any, Any] | Response:
++        frontend = input.get("settings", input)
++        backend = settings.convert_in(settings.Settings(**frontend))
++        backend = settings.set_settings(backend)
++        out = settings.convert_out(backend)
++        return dict(out)
+diff --git a/api/settings_workdir_file_structure.py b/api/settings_workdir_file_structure.py
+new file mode 100644
+index 00000000..ec7d4a99
+--- /dev/null
++++ b/api/settings_workdir_file_structure.py
+@@ -0,0 +1,32 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import file_tree, files
++
++
++class SettingsWorkdirFileStructure(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        workdir_path = input.get("workdir_path", "")
++        workdir_path = files.get_abs_path_development(workdir_path)
++        if not workdir_path:
++            raise Exception("workdir_path is required")
++
++        tree = str(
++            file_tree.file_tree(
++                workdir_path,
++                max_depth=int(input.get("workdir_max_depth", 0) or 0),
++                max_files=int(input.get("workdir_max_files", 0) or 0),
++                max_folders=int(input.get("workdir_max_folders", 0) or 0),
++                max_lines=int(input.get("workdir_max_lines", 0) or 0),
++                ignore=input.get("workdir_gitignore", "") or "",
++                output_mode=file_tree.OUTPUT_MODE_STRING,
++            )
++        )
++
++        if "\n" not in tree:
++            tree += "\n # Empty"
++
++        return {"data": tree}
++
++    @classmethod
++    def get_methods(cls) -> list[str]:
++        return ["POST"]
+diff --git a/api/skills.py b/api/skills.py
+new file mode 100644
+index 00000000..cb105120
+--- /dev/null
++++ b/api/skills.py
+@@ -0,0 +1,72 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++from helpers import runtime, skills, projects, files
++
++
++class Skills(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        action = input.get("action", "")
++
++        try:
++            if action == "list":
++                data = self.list_skills(input)
++            elif action == "delete":
++                data = self.delete_skill(input)
++            else:
++                raise Exception("Invalid action")
++
++            return {
++                "ok": True,
++                "data": data,
++            }
++        except Exception as e:
++            return {
++                "ok": False,
++                "error": str(e),
++            }
++
++    def list_skills(self, input: Input):
++        skill_list = skills.list_skills()
++
++        # filter by project
++        if project_name := (input.get("project_name") or "").strip() or None:
++            project_folder = projects.get_project_folder(project_name)
++            if runtime.is_development():
++                project_folder = files.normalize_a0_path(project_folder)
++            skill_list = [
++                s for s in skill_list if files.is_in_dir(str(s.path), project_folder)
++            ]
++
++        # filter by agent profile
++        if agent_profile := (input.get("agent_profile") or "").strip() or None:
++            roots: list[str] = [
++                files.get_abs_path("agents", agent_profile, "skills"),
++                files.get_abs_path("usr", "agents", agent_profile, "skills"),
++            ]
++            if project_name:
++                roots.append(
++                    projects.get_project_meta(project_name, "agents", agent_profile, "skills")
++                )
++
++            skill_list = [
++                s
++                for s in skill_list
++                if any(files.is_in_dir(str(s.path), r) for r in roots)
++            ]
++
++        result = []
++        for skill in skill_list:
++            result.append({
++                "name": skill.name,
++                "description": skill.description,
++                "path": str(skill.path),
++            })
++        result.sort(key=lambda x: (x["name"], x["path"]))
++        return result
++
++    def delete_skill(self, input: Input):
++        skill_path = str(input.get("skill_path") or "").strip()
++        if not skill_path:
++            raise Exception("skill_path is required")
++
++        skills.delete_skill(skill_path)
++        return {"ok": True, "skill_path": skill_path}
+diff --git a/api/skills_import.py b/api/skills_import.py
+new file mode 100644
+index 00000000..ff67c2b4
+--- /dev/null
++++ b/api/skills_import.py
+@@ -0,0 +1,81 @@
++from __future__ import annotations
++
++import os
++import time
++import uuid
++from pathlib import Path
++
++from helpers.api import ApiHandler, Request, Response
++from helpers import files
++from helpers.skills_import import import_skills
++from werkzeug.datastructures import FileStorage
++from werkzeug.utils import secure_filename
++
++
++class SkillsImport(ApiHandler):
++    """
++    Import an external skills pack (.zip) into usr/skills/<namespace>/...
++    Performs the actual import (not dry-run).
++    """
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        if "skills_file" not in request.files:
++            return {"success": False, "error": "No skills file provided"}
++
++        skills_file: FileStorage = request.files["skills_file"]
++        if not skills_file.filename:
++            return {"success": False, "error": "No file selected"}
++
++        ctxid = request.form.get("ctxid", "")
++        if not ctxid:
++            return {"success": False, "error": "No context id provided"}
++        _context = self.use_context(ctxid)
++
++        conflict = (request.form.get("conflict", "skip") or "skip").strip().lower()
++        if conflict not in ("skip", "overwrite", "rename"):
++            conflict = "skip"
++
++        namespace = (request.form.get("namespace", "") or "").strip() or None
++        project_name = (request.form.get("project_name", "") or "").strip() or None
++        agent_profile = (request.form.get("agent_profile", "") or "").strip() or None
++
++        # Save upload to a temp file so we can pass a filesystem path to the importer
++        tmp_dir = Path(files.get_abs_path("tmp", "uploads"))
++        tmp_dir.mkdir(parents=True, exist_ok=True)
++        base = secure_filename(skills_file.filename)  # type: ignore[arg-type]
++        if not base.lower().endswith(".zip"):
++            base = f"{base}.zip"
++        unique = uuid.uuid4().hex[:8]
++        stamp = time.strftime("%Y%m%d_%H%M%S")
++        tmp_path = tmp_dir / f"skills_import_{stamp}_{unique}_{base}"
++        skills_file.save(str(tmp_path))
++
++        try:
++            result = import_skills(
++                str(tmp_path),
++                namespace=namespace,
++                conflict=conflict,  # type: ignore[arg-type]
++                dry_run=False,  # Actual import, not preview
++                project_name=project_name,
++                agent_profile=agent_profile,
++            )
++
++            imported = [files.deabsolute_path(str(p)) for p in result.imported]
++            skipped = [files.deabsolute_path(str(p)) for p in result.skipped]
++            dest_root = files.deabsolute_path(str(result.destination_root / result.namespace))
++
++            return {
++                "success": True,
++                "namespace": result.namespace,
++                "destination": dest_root,
++                "imported": imported,
++                "skipped": skipped,
++                "imported_count": len(imported),
++                "skipped_count": len(skipped),
++                "conflict_policy": conflict,
++            }
++        finally:
++            try:
++                tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
++            except Exception:
++                pass
+diff --git a/api/skills_import_preview.py b/api/skills_import_preview.py
+new file mode 100644
+index 00000000..33baac03
+--- /dev/null
++++ b/api/skills_import_preview.py
+@@ -0,0 +1,82 @@
++from __future__ import annotations
++
++import os
++import time
++import uuid
++from pathlib import Path
++
++from helpers.api import ApiHandler, Request, Response
++from helpers import files
++from helpers.skills_import import import_skills
++from werkzeug.datastructures import FileStorage
++from werkzeug.utils import secure_filename
++
++
++class SkillsImportPreview(ApiHandler):
++    """
++    Preview importing an external skills pack (.zip) into usr/skills/<namespace>/...
++    Uses dry-run (no copying).
++    """
++
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        if "skills_file" not in request.files:
++            return {"success": False, "error": "No skills file provided"}
++
++        skills_file: FileStorage = request.files["skills_file"]
++        if not skills_file.filename:
++            return {"success": False, "error": "No file selected"}
++
++        ctxid = request.form.get("ctxid", "")
++        if not ctxid:
++            return {"success": False, "error": "No context id provided"}
++        _context = self.use_context(ctxid)
++
++        conflict = (request.form.get("conflict", "skip") or "skip").strip().lower()
++        if conflict not in ("skip", "overwrite", "rename"):
++            conflict = "skip"
++
++        namespace = (request.form.get("namespace", "") or "").strip() or None
++        project_name = (request.form.get("project_name", "") or "").strip() or None
++        agent_profile = (request.form.get("agent_profile", "") or "").strip() or None
++
++        # Save upload to a temp file so we can pass a filesystem path to the importer
++        tmp_dir = Path(files.get_abs_path("tmp", "uploads"))
++        tmp_dir.mkdir(parents=True, exist_ok=True)
++        base = secure_filename(skills_file.filename)  # type: ignore[arg-type]
++        if not base.lower().endswith(".zip"):
++            base = f"{base}.zip"
++        unique = uuid.uuid4().hex[:8]
++        stamp = time.strftime("%Y%m%d_%H%M%S")
++        tmp_path = tmp_dir / f"skills_import_preview_{stamp}_{unique}_{base}"
++        skills_file.save(str(tmp_path))
++
++        try:
++            result = import_skills(
++                str(tmp_path),
++                namespace=namespace,
++                conflict=conflict,  # type: ignore[arg-type]
++                dry_run=True,
++                project_name=project_name,
++                agent_profile=agent_profile,
++            )
++
++            imported = [files.deabsolute_path(str(p)) for p in result.imported]
++            skipped = [files.deabsolute_path(str(p)) for p in result.skipped]
++            dest_root = files.deabsolute_path(str(result.destination_root / result.namespace))
++
++            return {
++                "success": True,
++                "namespace": result.namespace,
++                "destination": dest_root,
++                "imported": imported,
++                "skipped": skipped,
++                "imported_count": len(imported),
++                "skipped_count": len(skipped),
++                "conflict_policy": conflict,
++            }
++        finally:
++            try:
++                tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
++            except Exception:
++                pass
++
+diff --git a/api/subagents.py b/api/subagents.py
+new file mode 100644
+index 00000000..81fd89b1
+--- /dev/null
++++ b/api/subagents.py
+@@ -0,0 +1,58 @@
++from helpers.api import ApiHandler, Input, Output, Request, Response
++from helpers import subagents
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from helpers import projects
++
++class Subagents(ApiHandler):
++    async def process(self, input: Input, request: Request) -> Output:
++        action = input.get("action", "")
++        ctxid = input.get("context_id", None)
++
++        if ctxid:
++            _context = self.use_context(ctxid)
++
++        try:
++            if action == "list":
++                data = self.get_subagents_list()
++            elif action == "load":
++                data = self.load_agent(input.get("name", None))
++            elif action == "save":
++                data = self.save_agent(input.get("name", None), input.get("data", None))
++            elif action == "delete":
++                data = self.delete_agent(input.get("name", None))
++            else:
++                raise Exception("Invalid action")
++
++            return {
++                "ok": True,
++                "data": data,
++            }
++        except Exception as e:
++            return {
++                "ok": False,
++                "error": str(e),
++            }
++
++    def get_subagents_list(self):
++        return subagents.get_agents_list()
++
++    def load_agent(self, name: str|None):
++        if name is None:
++            raise Exception("Subagent name is required")
++        return subagents.load_agent_data(name)
++
++    def save_agent(self, name:str|None, data: dict|None):
++        if name is None:
++            raise Exception("Subagent name is required")
++        if data is None:
++            raise Exception("Subagent data is required")
++        subagent = subagents.SubAgent(**data)
++        subagents.save_agent_data(name, subagent)
++        return subagents.load_agent_data(name)
++
++    def delete_agent(self, name: str|None):
++        if name is None:
++            raise Exception("Subagent name is required")
++        subagents.delete_agent_data(name)
+\ No newline at end of file
+diff --git a/api/synthesize.py b/api/synthesize.py
+new file mode 100644
+index 00000000..7957ef0d
+--- /dev/null
++++ b/api/synthesize.py
+@@ -0,0 +1,96 @@
++# api/synthesize.py
++
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import runtime, settings, kokoro_tts
++
++class Synthesize(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        text = input.get("text", "")
++        ctxid = input.get("ctxid", "")
++        
++        if ctxid:
++            context = self.use_context(ctxid)
++
++        # if not await kokoro_tts.is_downloaded():
++        #     context.log.log(type="info", content="Kokoro TTS model is currently being initialized, please wait...")
++
++        try:
++            # # Clean and chunk text for long responses
++            # cleaned_text = self._clean_text(text)
++            # chunks = self._chunk_text(cleaned_text)
++            
++            # if len(chunks) == 1:
++            #     # Single chunk - return as before
++            #     audio = await kokoro_tts.synthesize_sentences(chunks)
++            #     return {"audio": audio, "success": True}
++            # else:
++            #     # Multiple chunks - return as sequence
++            #     audio_parts = []
++            #     for chunk in chunks:
++            #         chunk_audio = await kokoro_tts.synthesize_sentences([chunk])
++            #         audio_parts.append(chunk_audio)
++            #     return {"audio_parts": audio_parts, "success": True}
++
++            # audio is chunked on the frontend for better flow
++            audio = await kokoro_tts.synthesize_sentences([text])
++            return {"audio": audio, "success": True}
++        except Exception as e:
++            return {"error": str(e), "success": False}
++    
++    # def _clean_text(self, text: str) -> str:
++    #     """Clean text by removing markdown, tables, code blocks, and other formatting"""
++    #     # Remove code blocks
++    #     text = re.sub(r'```[\s\S]*?```', '', text)
++    #     text = re.sub(r'`[^`]*`', '', text)
++        
++    #     # Remove markdown links
++    #     text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
++        
++    #     # Remove markdown formatting
++    #     text = re.sub(r'[*_#]+', '', text)
++        
++    #     # Remove tables (basic cleanup)
++    #     text = re.sub(r'\|[^\n]*\|', '', text)
++        
++    #     # Remove extra whitespace and newlines
++    #     text = re.sub(r'\n+', ' ', text)
++    #     text = re.sub(r'\s+', ' ', text)
++        
++    #     # Remove URLs
++    #     text = re.sub(r'https?://[^\s]+', '', text)
++        
++    #     # Remove email addresses
++    #     text = re.sub(r'\S+@\S+', '', text)
++        
++    #     return text.strip()
++    
++    # def _chunk_text(self, text: str) -> list[str]:
++    #     """Split text into manageable chunks for TTS"""
++    #     # If text is short enough, return as single chunk
++    #     if len(text) <= 300:
++    #         return [text]
++        
++    #     # Split into sentences first
++    #     sentences = re.split(r'(?<=[.!?])\s+', text)
++        
++    #     chunks = []
++    #     current_chunk = ""
++        
++    #     for sentence in sentences:
++    #         sentence = sentence.strip()
++    #         if not sentence:
++    #             continue
++                
++    #         # If adding this sentence would make chunk too long, start new chunk
++    #         if current_chunk and len(current_chunk + " " + sentence) > 300:
++    #             chunks.append(current_chunk.strip())
++    #             current_chunk = sentence
++    #         else:
++    #             current_chunk += (" " if current_chunk else "") + sentence
++        
++    #     # Add the last chunk if it has content
++    #     if current_chunk.strip():
++    #         chunks.append(current_chunk.strip())
++        
++    #     return chunks if chunks else [text]
+\ No newline at end of file
+diff --git a/api/transcribe.py b/api/transcribe.py
+new file mode 100644
+index 00000000..93e1cd59
+--- /dev/null
++++ b/api/transcribe.py
+@@ -0,0 +1,18 @@
++from helpers.api import ApiHandler, Request, Response
++
++from helpers import runtime, settings, whisper
++
++class Transcribe(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        audio = input.get("audio")
++        ctxid = input.get("ctxid", "")
++
++        if ctxid:
++            context = self.use_context(ctxid)
++
++        # if not await whisper.is_downloaded():
++        #     context.log.log(type="info", content="Whisper STT model is currently being initialized, please wait...")
++
++        set = settings.get_settings()
++        result = await whisper.transcribe(set["stt_model_size"], audio) # type: ignore
++        return result
+diff --git a/api/tunnel.py b/api/tunnel.py
+new file mode 100644
+index 00000000..6ff5ea62
+--- /dev/null
++++ b/api/tunnel.py
+@@ -0,0 +1,65 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import runtime
++from helpers.tunnel_manager import TunnelManager
++
++class Tunnel(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        return await process(input)
++
++async def process(input: dict) -> dict | Response:
++    action = input.get("action", "get")
++    
++    tunnel_manager = TunnelManager.get_instance()
++
++    if action == "health":
++        return {"success": True}
++    
++    if action == "create":
++        port = runtime.get_web_ui_port()
++        provider = input.get("provider", "serveo")  # Default to serveo
++        tunnel_url = tunnel_manager.start_tunnel(port, provider)
++        error = tunnel_manager.get_last_error()
++        if error:
++            return {
++                "success": False,
++                "tunnel_url": None,
++                "message": error,
++                "notifications": tunnel_manager.get_notifications()
++            }
++        
++        return {
++            "success": tunnel_url is not None,
++            "tunnel_url": tunnel_url,
++            "notifications": tunnel_manager.get_notifications()
++        }
++    
++    elif action == "stop":
++        return stop()
++    
++    elif action == "get":
++        tunnel_url = tunnel_manager.get_tunnel_url()
++        return {
++            "success": tunnel_url is not None,
++            "tunnel_url": tunnel_url,
++            "is_running": tunnel_manager.is_running
++        }
++    
++    elif action == "notifications":
++        return {
++            "success": True,
++            "notifications": tunnel_manager.get_notifications(),
++            "tunnel_url": tunnel_manager.get_tunnel_url(),
++            "is_running": tunnel_manager.is_running
++        }
++    
++    return {
++        "success": False,
++        "error": "Invalid action. Use 'create', 'stop', 'get', or 'notifications'."
++    } 
++
++def stop():
++    tunnel_manager = TunnelManager.get_instance()
++    tunnel_manager.stop_tunnel()
++    return {
++        "success": True
++    }
+diff --git a/api/tunnel_proxy.py b/api/tunnel_proxy.py
+new file mode 100644
+index 00000000..29868eac
+--- /dev/null
++++ b/api/tunnel_proxy.py
+@@ -0,0 +1,38 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import dotenv, runtime
++from helpers.tunnel_manager import TunnelManager
++import requests
++
++
++class TunnelProxy(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        return await process(input)
++
++async def process(input: dict) -> dict | Response:
++    # Get configuration from environment
++    tunnel_api_port = (
++        runtime.get_arg("tunnel_api_port")
++        or int(dotenv.get_dotenv_value("TUNNEL_API_PORT", 0))
++        or 55520
++    )
++
++    # first verify the service is running:
++    service_ok = False
++    try:
++        response = requests.post(f"http://localhost:{tunnel_api_port}/", json={"action": "health"})
++        if response.status_code == 200:
++            service_ok = True
++    except Exception as e:
++        service_ok = False
++
++    # forward this request to the tunnel service if OK
++    if service_ok:
++        try:
++            response = requests.post(f"http://localhost:{tunnel_api_port}/", json=input)
++            return response.json()
++        except Exception as e:
++            return {"error": str(e)}
++    else:
++        # forward to API handler directly
++        from api.tunnel import process as local_process
++        return await local_process(input)
+diff --git a/api/upload.py b/api/upload.py
+new file mode 100644
+index 00000000..f334fb0a
+--- /dev/null
++++ b/api/upload.py
+@@ -0,0 +1,30 @@
++from helpers.api import ApiHandler, Request, Response
++from helpers import files
++from helpers.security import safe_filename
++
++
++class UploadFile(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        if "file" not in request.files:
++            raise Exception("No file part")
++
++        file_list = request.files.getlist("file")  # Handle multiple files
++        saved_filenames = []
++
++        for file in file_list:
++            if file and self.allowed_file(file.filename):  # Check file type
++                if not file.filename:
++                    continue
++                filename = safe_filename(file.filename)
++                if not filename:
++                    continue
++                file.save(files.get_abs_path("usr/uploads", filename))
++                saved_filenames.append(filename)
++
++        return {"filenames": saved_filenames}  # Return saved filenames
++
++
++    def allowed_file(self,filename):
++        return True
++        # ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "txt", "pdf", "csv", "html", "json", "md"}
++        # return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+\ No newline at end of file
+diff --git a/api/upload_work_dir_files.py b/api/upload_work_dir_files.py
+new file mode 100644
+index 00000000..88a9ff08
+--- /dev/null
++++ b/api/upload_work_dir_files.py
+@@ -0,0 +1,64 @@
++import base64
++from werkzeug.datastructures import FileStorage
++from helpers.api import ApiHandler, Request, Response
++from helpers.file_browser import FileBrowser
++from helpers import files, runtime
++from api import get_work_dir_files
++import os
++
++
++class UploadWorkDirFiles(ApiHandler):
++    async def process(self, input: dict, request: Request) -> dict | Response:
++        if "files[]" not in request.files:
++            raise Exception("No files uploaded")
++
++        current_path = request.form.get("path", "")
++        uploaded_files = request.files.getlist("files[]")
++
++        # browser = FileBrowser()
++        # successful, failed = browser.save_files(uploaded_files, current_path)
++
++        successful, failed = await upload_files(uploaded_files, current_path)
++
++        if not successful and failed:
++            raise Exception("All uploads failed")
++
++        # result = browser.get_files(current_path)
++        result = await runtime.call_development_function(get_work_dir_files.get_files, current_path)
++
++        return {
++            "message": (
++                "Files uploaded successfully"
++                if not failed
++                else "Some files failed to upload"
++            ),
++            "data": result,
++            "successful": successful,
++            "failed": failed,
++        }
++
++
++async def upload_files(uploaded_files: list[FileStorage], current_path: str):
++    if runtime.is_development():
++        successful = []
++        failed = []
++        for file in uploaded_files:
++            file_content = file.stream.read()
++            base64_content = base64.b64encode(file_content).decode("utf-8")
++            if await runtime.call_development_function(
++                upload_file, current_path, file.filename, base64_content
++            ):
++                successful.append(file.filename)
++            else:
++                failed.append(file.filename)
++    else:
++        browser = FileBrowser()
++        successful, failed = browser.save_files(uploaded_files, current_path)
++
++    return successful, failed
++
++
++async def upload_file(current_path: str, filename: str, base64_content: str):
++    browser = FileBrowser()
++    return browser.save_file_b64(current_path, filename, base64_content)
++

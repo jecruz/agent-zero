@@ -1,0 +1,17 @@
+webui/components/modals/markdown/markdown-modal.html
+webui/components/modals/markdown/markdown-store.js
+webui/components/plugins/list/plugin-init-modal.html
+webui/components/plugins/list/plugin-init-store.js
+webui/components/plugins/list/plugin-list.html
+webui/components/plugins/list/pluginListStore.js
+webui/components/plugins/plugin-configs.html
+webui/components/plugins/plugin-info.html
+webui/components/plugins/plugin-settings-store.js
+webui/components/plugins/plugin-settings.html
+webui/components/plugins/toggle/plugin-toggle-advanced.html
+webui/components/plugins/toggle/plugin-toggle-store.js
+webui/components/plugins/toggle/plugin-toggles.html
+webui/components/settings/plugins/plugins-subsection-store.js
+webui/components/settings/plugins/plugins-subsection.html
+webui/js/cache.js
+webui/js/extensions.js

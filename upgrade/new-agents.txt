@@ -1,0 +1,5 @@
+agents/agent0/agent.yaml
+agents/default/agent.yaml
+agents/developer/agent.yaml
+agents/hacker/agent.yaml
+agents/researcher/agent.yaml

@@ -1,0 +1,24 @@
+diff --git a/conf/model_providers.yaml b/conf/model_providers.yaml
+index a116a18c..e81091eb 100644
+--- a/conf/model_providers.yaml
++++ b/conf/model_providers.yaml
+@@ -78,6 +78,9 @@ chat:
+       extra_headers:
+         "HTTP-Referer": "https://agent-zero.ai/"
+         "X-Title": "Agent Zero"
++        "X-OpenRouter-Categories":
++          - personal-agent
++          - cloud-agent
+   sambanova:
+     name: Sambanova
+     litellm_provider: sambanova
+@@ -139,6 +142,9 @@ embedding:
+       extra_headers:
+         "HTTP-Referer": "https://agent-zero.ai/"
+         "X-Title": "Agent Zero"
++        "X-OpenRouter-Categories":
++          - personal-agent
++          - cloud-agent
+   other:
+     name: Other OpenAI compatible
+     litellm_provider: openai

@@ -1,0 +1,1901 @@
+diff --git a/extensions/python/.gitkeep b/extensions/python/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/agent_Agent_handle_exception_end/_40_handle_intervention_exception.py b/extensions/python/agent_Agent_handle_exception_end/_40_handle_intervention_exception.py
+new file mode 100644
+index 00000000..71437278
+--- /dev/null
++++ b/extensions/python/agent_Agent_handle_exception_end/_40_handle_intervention_exception.py
+@@ -0,0 +1,21 @@
++from datetime import datetime, timezone
++from helpers.extension import Extension
++from agent import LoopData
++from helpers.localization import Localization
++from helpers.errors import InterventionException
++from helpers import errors
++from helpers.print_style import PrintStyle
++
++
++class HandleInterventionException(Extension):
++    async def execute(self, data: dict = {}, **kwargs):
++        if not self.agent:
++            return
++
++        if not data.get("exception"):
++            return
++
++        if isinstance(data["exception"], InterventionException):
++            data["exception"] = None # skip the exception and continue message loop
++
++        
+diff --git a/extensions/python/agent_Agent_handle_exception_end/_50_handle_repairable_exception.py b/extensions/python/agent_Agent_handle_exception_end/_50_handle_repairable_exception.py
+new file mode 100644
+index 00000000..f3501657
+--- /dev/null
++++ b/extensions/python/agent_Agent_handle_exception_end/_50_handle_repairable_exception.py
+@@ -0,0 +1,25 @@
++from datetime import datetime, timezone
++from helpers.extension import Extension
++from agent import LoopData
++from helpers.localization import Localization
++from helpers.errors import RepairableException
++from helpers import errors, extension
++from helpers.print_style import PrintStyle
++
++class HandleRepairableException(Extension):
++    async def execute(self, data: dict = {}, **kwargs):
++        if not self.agent:
++            return
++
++        if not data.get("exception"):
++            return
++
++        if isinstance(data["exception"], RepairableException):
++            msg = {"message": errors.format_error(data["exception"])}
++            await extension.call_extensions_async("error_format", agent=self.agent, msg=msg)
++            self.agent.hist_add_warning(msg["message"])
++            PrintStyle(font_color="red", padding=True).print(msg["message"])
++            self.agent.context.log.log(type="warning", content=msg["message"])
++            data["exception"] = None
++
++        
+diff --git a/extensions/python/agent_Agent_handle_exception_end/_90_handle_critical_exception.py b/extensions/python/agent_Agent_handle_exception_end/_90_handle_critical_exception.py
+new file mode 100644
+index 00000000..ccd6edfc
+--- /dev/null
++++ b/extensions/python/agent_Agent_handle_exception_end/_90_handle_critical_exception.py
+@@ -0,0 +1,43 @@
++import asyncio
++
++from helpers.extension import Extension
++from helpers.print_style import PrintStyle
++from helpers import errors
++
++from helpers.errors import HandledException
++
++
++class HandleCriticalException(Extension):
++    async def execute(self, data: dict = {}, **kwargs):
++        if not self.agent:
++            return
++
++        if not (exception:= data.get("exception")):
++            return
++
++        # when exception is HandledException, keep it active, no logging here
++        if isinstance(exception, HandledException):
++            return 
++
++        # asyncio cancel - chat is being terminated, print out and re-raise as handledException
++        if isinstance(exception, asyncio.CancelledError):
++            PrintStyle(font_color="white", background_color="red", padding=True).print(
++                f"Context {self.agent.context.id} terminated during message loop"
++            )
++            data["exception"] = HandledException(exception)
++            return
++
++        # other exceptions should be logged and re-raised as HandledException
++        error_text = errors.error_text(exception)
++        error_message = errors.format_error(exception)
++
++        PrintStyle(font_color="red", padding=True).print(error_message)
++        self.agent.context.log.log(
++            type="error",
++            content=error_message,
++        )
++        PrintStyle(font_color="red", padding=True).print(
++            f"{self.agent.agent_name}: {error_text}"
++        )
++
++        data["exception"] = HandledException(exception)
+diff --git a/extensions/python/agent_init/.gitkeep b/extensions/python/agent_init/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/agent_init/_10_initial_message.py b/extensions/python/agent_init/_10_initial_message.py
+new file mode 100644
+index 00000000..557f8701
+--- /dev/null
++++ b/extensions/python/agent_init/_10_initial_message.py
+@@ -0,0 +1,43 @@
++import json
++from agent import LoopData
++from helpers.extension import Extension
++
++
++class InitialMessage(Extension):
++
++    def execute(self, **kwargs):
++        """
++        Add an initial greeting message when first user message is processed.
++        Called only once per session via _process_chain method.
++        """
++        if not self.agent:
++            return
++
++        # Only add initial message for main agent (A0), not subordinate agents
++        if self.agent.number != 0:
++            return
++
++        # If the context already contains log messages, do not add another initial message
++        if self.agent.context.log.logs:
++            return
++
++        # Construct the initial message from prompt template
++        initial_message = self.agent.read_prompt("fw.initial_message.md")
++
++        # add initial loop data to agent (for hist_add_ai_response)
++        self.agent.loop_data = LoopData(user_message=None)
++
++        # Add the message to history as an AI response
++        self.agent.hist_add_ai_response(initial_message)
++
++        # json parse the message, get the tool_args text
++        initial_message_json = json.loads(initial_message)
++        initial_message_text = initial_message_json.get("tool_args", {}).get("text", "Hello! How can I help you?")
++
++        # Add to log (green bubble) for immediate UI display
++        self.agent.context.log.log(
++            type="response",
++            content=initial_message_text,
++            finished=True,
++            update_progress="none",
++        )
+diff --git a/extensions/python/agent_init/_15_load_profile_settings.py b/extensions/python/agent_init/_15_load_profile_settings.py
+new file mode 100644
+index 00000000..9270fb04
+--- /dev/null
++++ b/extensions/python/agent_init/_15_load_profile_settings.py
+@@ -0,0 +1,54 @@
++from initialize import initialize_agent
++from helpers import dirty_json, files, subagents, projects
++from helpers.extension import Extension
++
++
++class LoadProfileSettings(Extension):
++    
++    def execute(self, **kwargs) -> None:
++
++        if not self.agent or not self.agent.config.profile:
++            return
++
++        config_files = subagents.get_paths(self.agent, "settings.json", include_default=False, include_user=False)
++        settings_override = {}
++        for settings_path in config_files:
++            if files.exists(settings_path):
++                try:
++                    override_settings_str = files.read_file(settings_path)
++                    override_settings = dirty_json.try_parse(override_settings_str)
++                    if isinstance(override_settings, dict):
++                        settings_override.update(override_settings)
++                    else:
++                        raise Exception(
++                            f"Subordinate settings in {settings_path} must be a JSON object."
++                        )
++                except Exception as e:
++                    self.agent.context.log.log(
++                        type="error",
++                        content=(
++                            f"Error loading subordinate settings from {settings_path} for "
++                            f"profile '{self.agent.config.profile}': {e}"
++                        ),
++                    )
++
++        if settings_override:
++            current_config = self.agent.config
++            new_config = initialize_agent(override_settings=settings_override)
++
++            for override_key, config_attr in (
++                ("agent_profile", "profile"),
++                ("mcp_servers", "mcp_servers"),
++                ("browser_http_headers", "browser_http_headers"),
++            ):
++                if override_key not in settings_override:
++                    setattr(new_config, config_attr, getattr(current_config, config_attr))
++            self.agent.config = new_config
++            # self.agent.context.log.log(
++            #     type="info",
++            #     content=(
++            #         "Loaded custom settings for agent "
++            #         f"{self.agent.number} with profile '{self.agent.config.profile}'."
++            #     ),
++            # )
++
+diff --git a/extensions/python/banners/.gitkeep b/extensions/python/banners/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/banners/_10_unsecured_connection.py b/extensions/python/banners/_10_unsecured_connection.py
+new file mode 100644
+index 00000000..3b05b21b
+--- /dev/null
++++ b/extensions/python/banners/_10_unsecured_connection.py
+@@ -0,0 +1,63 @@
++from helpers.extension import Extension
++from helpers import dotenv
++import re
++
++
++class UnsecuredConnectionCheck(Extension):
++    """Check: non-local without credentials, or credentials over non-HTTPS."""
++
++    async def execute(self, banners: list = [], frontend_context: dict = {}, **kwargs):
++        hostname = frontend_context.get("hostname", "")
++        protocol = frontend_context.get("protocol", "")
++        
++        auth_login = dotenv.get_dotenv_value(dotenv.KEY_AUTH_LOGIN, "")
++        auth_password = dotenv.get_dotenv_value(dotenv.KEY_AUTH_PASSWORD, "")
++        has_credentials = bool(auth_login and auth_login.strip() and auth_password and auth_password.strip())
++        
++        is_local = self._is_localhost(hostname)
++        is_https = protocol == "https:"
++        
++        if not is_local and not has_credentials:
++            banners.append({
++                "id": "unsecured-connection",
++                "type": "warning",
++                "priority": 80,
++                "title": "Unsecured Connection",
++                "html": """You are accessing Agent Zero from a non-local address without authentication. 
++                         <a href="#" onclick="document.getElementById('settings').click(); return false;">
++                         Configure credentials</a> in Settings → External Services → Authentication.""",
++                "dismissible": True,
++                "source": "backend"
++            })
++        
++        if has_credentials and not is_local and not is_https:
++            banners.append({
++                "id": "credentials-unencrypted",
++                "type": "warning", 
++                "priority": 90,
++                "title": "Credentials May Be Sent Unencrypted",
++                "html": """Your connection is not using HTTPS. Login credentials may be transmitted in plain text. 
++                         Consider using HTTPS or a secure tunnel.""",
++                "dismissible": True,
++                "source": "backend"
++            })
++
++    def _is_localhost(self, hostname: str) -> bool:
++        local_patterns = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
++        
++        if hostname in local_patterns:
++            return True
++        
++        # RFC1918 private ranges
++        if re.match(r"^192\.168\.\d{1,3}\.\d{1,3}$", hostname):
++            return True
++        if re.match(r"^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$", hostname):
++            return True
++        if re.match(r"^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$", hostname):
++            return True
++        
++        # .local domains
++        if hostname.endswith(".local"):
++            return True
++        
++        return False
+diff --git a/extensions/python/banners/_20_missing_api_key.py b/extensions/python/banners/_20_missing_api_key.py
+new file mode 100644
+index 00000000..6dae5142
+--- /dev/null
++++ b/extensions/python/banners/_20_missing_api_key.py
+@@ -0,0 +1,64 @@
++from helpers.extension import Extension
++from helpers import settings as settings_helper
++import models
++
++
++class MissingApiKeyCheck(Extension):
++    """Check if API keys are configured for selected model providers."""
++
++    LOCAL_PROVIDERS = ["ollama", "lm_studio"]
++    LOCAL_EMBEDDING = ["huggingface"]
++    MODEL_TYPE_NAMES = {
++        "chat": "Chat Model",
++        "utility": "Utility Model", 
++        "browser": "Web Browser Model",
++        "embedding": "Embedding Model",
++    }
++
++    async def execute(self, banners: list = [], frontend_context: dict = {}, **kwargs):
++        current_settings = settings_helper.get_settings()
++        model_providers = {
++            "chat": current_settings.get("chat_model_provider", ""),
++            "utility": current_settings.get("util_model_provider", ""),
++            "browser": current_settings.get("browser_model_provider", ""),
++            "embedding": current_settings.get("embed_model_provider", ""),
++        }
++        
++        missing_providers = []
++        
++        for model_type, provider in model_providers.items():
++            if not provider:
++                continue
++            
++            provider_lower = provider.lower()
++            if provider_lower in self.LOCAL_PROVIDERS:
++                continue
++            if model_type == "embedding" and provider_lower in self.LOCAL_EMBEDDING:
++                continue
++            
++            api_key = models.get_api_key(provider_lower)
++            if not (api_key and api_key.strip() and api_key != "None"):
++                missing_providers.append({
++                    "model_type": self.MODEL_TYPE_NAMES.get(model_type, model_type),
++                    "provider": provider,
++                })
++        
++        if not missing_providers:
++            return
++        
++        model_list = ", ".join(
++            f"{p['model_type']} ({p['provider']})" for p in missing_providers
++        )
++        
++        banners.append({
++            "id": "missing-api-key",
++            "type": "error",
++            "priority": 100,
++            "title": "Missing LLM API Key for current settings",
++            "html": f"""No API key configured for: {model_list}.<br>
++                     Agent Zero will not be able to function properly unless you provide an API key or change your settings.<br>
++                     <a href="#" onclick="document.getElementById('settings').click(); return false;">
++                     Add your API key</a> in Settings → External Services → API Keys.""",
++            "dismissible": False,
++            "source": "backend"
++        })
+diff --git a/extensions/python/banners/_30_system_resources.py b/extensions/python/banners/_30_system_resources.py
+new file mode 100644
+index 00000000..25c65a67
+--- /dev/null
++++ b/extensions/python/banners/_30_system_resources.py
+@@ -0,0 +1,149 @@
++from helpers.extension import Extension
++import os
++import psutil
++
++
++class SystemResourcesCheck(Extension):
++    async def execute(self, banners: list = [], frontend_context: dict = {}, **kwargs):
++        try:
++            cpu_percent = psutil.cpu_percent(interval=0.1)
++        except Exception:
++            cpu_percent = None
++
++        try:
++            cpu_cores = psutil.cpu_count(logical=True)
++        except Exception:
++            cpu_cores = None
++
++        load_avg = self._get_load_average()
++
++        try:
++            vm = psutil.virtual_memory()
++            ram_percent = vm.percent
++            ram_used_gb = (vm.total - vm.available) / (1024 ** 3)
++            ram_total_gb = vm.total / (1024 ** 3)
++        except Exception:
++            ram_percent = None
++
++            ram_used_gb = None
++            ram_total_gb = None
++
++        disk_percent, disk_used_gb, disk_total_gb, disk_path = self._get_disk_usage()
++
++        try:
++            net = psutil.net_io_counters()
++            net_sent = self._format_bytes(net.bytes_sent)
++            net_recv = self._format_bytes(net.bytes_recv)
++        except Exception:
++            net_sent = "N/A"
++            net_recv = "N/A"
++
++        load_value = "N/A"
++        if load_avg:
++            la1, la5, la15 = load_avg
++            load_value = f"{la1:.2f} / {la5:.2f} / {la15:.2f}"
++
++        if disk_percent is None or disk_used_gb is None or disk_total_gb is None:
++            disk_value = "N/A"
++        else:
++            disk_value = f"{disk_used_gb:.2f}/{disk_total_gb:.2f} GB"
++
++        if cpu_percent is None:
++            cpu_value = "N/A"
++        else:
++            cores_value = "" if cpu_cores is None else f" ({cpu_cores} cores)"
++            cpu_value = f"{cpu_percent:.0f}%{cores_value}"
++
++        if ram_percent is None or ram_used_gb is None or ram_total_gb is None:
++            ram_value = "N/A"
++        else:
++            ram_value = f"{ram_used_gb:.2f}/{ram_total_gb:.2f} GB"
++
++        cpu_bar = self._bar_html(cpu_percent)
++        ram_bar = self._bar_html(ram_percent)
++        disk_bar = self._bar_html(disk_percent)
++
++        banners.append({
++            "id": "system-resources",
++            "type": "info",
++            "priority": 10,
++            "title": "System Resources",
++            "html": (
++                "<div style=\"display:flex;flex-direction:column;gap:14px;padding-top:6px;\">"
++                "<div style=\"display:flex;flex-direction:column;gap:12px;\">"
++                "<div style=\"display:flex;flex-wrap:wrap;column-gap:12px;row-gap:10px;align-items:center;\">"
++                "<div style=\"flex:0 1 140px;min-width:110px;display:flex;flex-direction:column;gap:6px;\">"
++                "<div style=\"font-size:12px;letter-spacing:.10em;text-transform:uppercase;opacity:.65;line-height:1.1\">CPU</div>"
++                f"<div style=\"font-weight:750;font-variant-numeric:tabular-nums;letter-spacing:.02em;line-height:1.1\">{cpu_value}</div>"
++                "</div>"
++                f"{cpu_bar}"
++                "</div>"
++                "<div style=\"display:flex;flex-wrap:wrap;column-gap:12px;row-gap:10px;align-items:center;\">"
++                "<div style=\"flex:0 1 140px;min-width:110px;display:flex;flex-direction:column;gap:6px;\">"
++                "<div style=\"font-size:12px;letter-spacing:.10em;text-transform:uppercase;opacity:.65;line-height:1.1\">RAM</div>"
++                f"<div style=\"font-weight:750;font-variant-numeric:tabular-nums;letter-spacing:.02em;line-height:1.1\">{ram_value}</div>"
++                "</div>"
++                f"{ram_bar}"
++                "</div>"
++                "<div style=\"display:flex;flex-wrap:wrap;column-gap:12px;row-gap:10px;align-items:center;\">"
++                "<div style=\"flex:0 1 140px;min-width:110px;display:flex;flex-direction:column;gap:6px;\">"
++                "<div style=\"font-size:12px;letter-spacing:.10em;text-transform:uppercase;opacity:.65;line-height:1.1\">Disk</div>"
++                f"<div style=\"font-weight:750;font-variant-numeric:tabular-nums;letter-spacing:.02em;line-height:1.1\">{disk_value}</div>"
++                "</div>"
++                f"{disk_bar}"
++                "</div>"
++                "</div>"
++                "<div style=\"height:1px;background:rgba(255,255,255,.08);\"></div>"
++                "<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;\">"
++                f"<div><div style=\"font-size:12px;letter-spacing:.10em;text-transform:uppercase;opacity:.65;margin-bottom:6px;\">Load (1/5/15)</div><div style=\"font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;opacity:.85;font-variant-numeric:tabular-nums\">{load_value}</div></div>"
++                f"<div><div style=\"font-size:12px;letter-spacing:.10em;text-transform:uppercase;opacity:.65;margin-bottom:6px;\">Net (since boot)</div><div style=\"font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;opacity:.85;font-variant-numeric:tabular-nums\">{net_sent} sent / {net_recv} recv</div></div>"
++                "</div>"
++                "</div>"
++            ),
++            "dismissible": True,
++            "source": "backend",
++        })
++
++    def _bar_html(self, percent: float | None) -> str:
++        if percent is None:
++            return ""
++
++        p = max(0.0, min(100.0, float(percent)))
++        if p >= 85:
++            color = "#ef4444"
++        elif p >= 70:
++            color = "#f59e0b"
++        else:
++            color = "#22c55e"
++
++        return (
++            "<div style=\"flex:1 1 220px;width:100%;max-width:260px;height:10px;border-radius:999px;"
++            "background:rgba(255,255,255,.10);overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);\">"
++            f"<div style=\"height:100%;width:{p:.0f}%;background:{color};border-radius:999px;\"></div>"
++            "</div>"
++        )
++
++    def _get_load_average(self) -> tuple[float, float, float] | None:
++        try:
++            return os.getloadavg()
++        except Exception:
++            return None
++
++    def _get_disk_usage(self) -> tuple[float | None, float | None, float | None, str]:
++        for path in ["/", os.path.expanduser("~")]:
++            try:
++                usage = psutil.disk_usage(path)
++                used_gb = usage.used / (1024 ** 3)
++                total_gb = usage.total / (1024 ** 3)
++                return usage.percent, used_gb, total_gb, path
++            except Exception:
++                continue
++        return None, None, None, "/"
++
++    def _format_bytes(self, value: int) -> str:
++        size = float(value)
++        for unit in ["B", "KB", "MB", "GB", "TB", "PB"]:
++            if size < 1024:
++                return f"{size:.1f} {unit}"
++            size /= 1024
++        return f"{size:.1f} EB"
+diff --git a/extensions/python/before_main_llm_call/.gitkeep b/extensions/python/before_main_llm_call/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/before_main_llm_call/_10_log_for_stream.py b/extensions/python/before_main_llm_call/_10_log_for_stream.py
+new file mode 100644
+index 00000000..58684ab2
+--- /dev/null
++++ b/extensions/python/before_main_llm_call/_10_log_for_stream.py
+@@ -0,0 +1,31 @@
++from helpers import persist_chat, tokens
++from helpers.extension import Extension
++from agent import LoopData
++import asyncio
++from helpers.log import LogItem
++from helpers import log
++import math
++
++
++class LogForStream(Extension):
++
++    async def execute(self, loop_data: LoopData = LoopData(), text: str = "", **kwargs):
++        if not self.agent:
++            return
++        
++        # create log message and store it in loop data temporary params
++        if "log_item_generating" not in loop_data.params_temporary:
++            loop_data.params_temporary["log_item_generating"] = (
++                self.agent.context.log.log(
++                    type="agent",
++                    heading=build_default_heading(self.agent),
++                )
++            )
++
++def build_heading(agent, text: str, icon: str = "network_intelligence"):
++    # Include agent identifier for all agents (A0:, A1:, A2:, etc.)
++    agent_prefix = f"{agent.agent_name}: "
++    return f"{agent_prefix}{text}"
++
++def build_default_heading(agent):
++    return build_heading(agent, "Calling LLM...") 
+\ No newline at end of file
+diff --git a/extensions/python/error_format/.gitkeep b/extensions/python/error_format/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/error_format/_10_mask_errors.py b/extensions/python/error_format/_10_mask_errors.py
+new file mode 100644
+index 00000000..3547e522
+--- /dev/null
++++ b/extensions/python/error_format/_10_mask_errors.py
+@@ -0,0 +1,20 @@
++from helpers.extension import Extension
++from helpers.secrets import get_secrets_manager
++
++
++class MaskErrorSecrets(Extension):
++
++    async def execute(self, **kwargs):
++        if not self.agent:
++            return
++        
++        # Get error data from kwargs
++        msg = kwargs.get("msg")
++        if not msg:
++            return
++
++        secrets_mgr = get_secrets_manager(self.agent.context)
++
++        # Mask the error message
++        if "message" in msg:
++            msg["message"] = secrets_mgr.mask_values(msg["message"])
+diff --git a/extensions/python/hist_add_before/.gitkeep b/extensions/python/hist_add_before/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/hist_add_before/_10_mask_content.py b/extensions/python/hist_add_before/_10_mask_content.py
+new file mode 100644
+index 00000000..5b09e14c
+--- /dev/null
++++ b/extensions/python/hist_add_before/_10_mask_content.py
+@@ -0,0 +1,35 @@
++from helpers.extension import Extension
++from helpers.secrets import get_secrets_manager
++
++
++class MaskHistoryContent(Extension):
++
++    def execute(self, **kwargs):
++        if not self.agent:
++            return
++
++        # Get content data from kwargs
++        content_data = kwargs.get("content_data")
++        if not content_data:
++            return
++
++        try:
++            secrets_mgr = get_secrets_manager(self.agent.context)
++
++            # Mask the content before adding to history
++            content_data["content"] = self._mask_content(content_data["content"], secrets_mgr)
++        except Exception as e:
++            # If masking fails, proceed without masking
++            pass
++
++    def _mask_content(self, content, secrets_mgr):
++        """Recursively mask secrets in message content."""
++        if isinstance(content, str):
++            return secrets_mgr.mask_values(content)
++        elif isinstance(content, list):
++            return [self._mask_content(item, secrets_mgr) for item in content]
++        elif isinstance(content, dict):
++            return {k: self._mask_content(v, secrets_mgr) for k, v in content.items()}
++        else:
++            # For other types, return as-is
++            return content
+diff --git a/extensions/python/hist_add_tool_result/.gitkeep b/extensions/python/hist_add_tool_result/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/hist_add_tool_result/_90_save_tool_call_file.py b/extensions/python/hist_add_tool_result/_90_save_tool_call_file.py
+new file mode 100644
+index 00000000..21d6ea0e
+--- /dev/null
++++ b/extensions/python/hist_add_tool_result/_90_save_tool_call_file.py
+@@ -0,0 +1,40 @@
++from typing import Any
++from helpers.extension import Extension
++from helpers import files, persist_chat
++import os, re
++
++LEN_MIN = 500
++
++class SaveToolCallFile(Extension):
++    def execute(self, data: dict[str, Any] | None = None, **kwargs):
++        if not self.agent:
++            return
++            
++        if not data:
++            return
++
++        # get tool call result
++        result = data.get("tool_result") if isinstance(data, dict) else None
++        if result is None:
++            return
++
++        # skip short results
++        if len(str(result)) < LEN_MIN:
++            return
++
++        # message files directory
++        msgs_folder = persist_chat.get_chat_msg_files_folder(self.agent.context.id)
++        os.makedirs(msgs_folder, exist_ok=True)
++
++        # count the files in the directory
++        last_num = len(os.listdir(msgs_folder))
++
++        # create new file
++        new_file = files.get_abs_path(msgs_folder, f"{last_num+1}.txt")
++        files.write_file(
++            new_file,
++            result,
++        )
++
++        # add the path to the history
++        data["file"] = new_file
+diff --git a/extensions/python/job_loop/.gitkeep b/extensions/python/job_loop/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/message_loop_end/.gitkeep b/extensions/python/message_loop_end/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/message_loop_end/_10_organize_history.py b/extensions/python/message_loop_end/_10_organize_history.py
+new file mode 100644
+index 00000000..d91c9ef8
+--- /dev/null
++++ b/extensions/python/message_loop_end/_10_organize_history.py
+@@ -0,0 +1,22 @@
++from helpers.extension import Extension
++from agent import LoopData
++from helpers.defer import DeferredTask, THREAD_BACKGROUND
++
++DATA_NAME_TASK = "_organize_history_task"
++
++
++class OrganizeHistory(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        # is there a running task? if yes, skip this round, the wait extension will double check the context size
++        task: DeferredTask|None = self.agent.get_data(DATA_NAME_TASK)
++        if task and not task.is_ready():
++            return
++
++        # start task
++        task = DeferredTask(thread_name=THREAD_BACKGROUND)
++        task.start_task(self.agent.history.compress)
++        # set to agent to be able to wait for it
++        self.agent.set_data(DATA_NAME_TASK, task)
+diff --git a/extensions/python/message_loop_end/_90_save_chat.py b/extensions/python/message_loop_end/_90_save_chat.py
+new file mode 100644
+index 00000000..72a3410b
+--- /dev/null
++++ b/extensions/python/message_loop_end/_90_save_chat.py
+@@ -0,0 +1,15 @@
++from helpers.extension import Extension
++from agent import LoopData, AgentContextType
++from helpers import persist_chat
++
++
++class SaveChat(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        # Skip saving BACKGROUND contexts as they should be ephemeral
++        if self.agent.context.type == AgentContextType.BACKGROUND:
++            return
++
++        persist_chat.save_tmp_chat(self.agent.context)
+diff --git a/extensions/python/message_loop_prompts_after/.gitkeep b/extensions/python/message_loop_prompts_after/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/message_loop_prompts_after/_60_include_current_datetime.py b/extensions/python/message_loop_prompts_after/_60_include_current_datetime.py
+new file mode 100644
+index 00000000..7ab073c4
+--- /dev/null
++++ b/extensions/python/message_loop_prompts_after/_60_include_current_datetime.py
+@@ -0,0 +1,26 @@
++from datetime import datetime, timezone
++from helpers.extension import Extension
++from agent import LoopData
++from helpers.localization import Localization
++
++
++class IncludeCurrentDatetime(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        # get current datetime
++        current_datetime = Localization.get().utc_dt_to_localtime_str(
++            datetime.now(timezone.utc), sep=" ", timespec="seconds"
++        )
++        # remove timezone offset
++        if current_datetime and "+" in current_datetime:
++            current_datetime = current_datetime.split("+")[0]
++
++        # read prompt
++        datetime_prompt = self.agent.read_prompt(
++            "agent.system.datetime.md", date_time=current_datetime
++        )
++
++        # add current datetime to the loop data
++        loop_data.extras_temporary["current_datetime"] = datetime_prompt
+diff --git a/extensions/python/message_loop_prompts_after/_65_include_loaded_skills.py b/extensions/python/message_loop_prompts_after/_65_include_loaded_skills.py
+new file mode 100644
+index 00000000..04c86fc8
+--- /dev/null
++++ b/extensions/python/message_loop_prompts_after/_65_include_loaded_skills.py
+@@ -0,0 +1,33 @@
++from helpers.extension import Extension
++from helpers import skills
++from tools.skills_tool import DATA_NAME_LOADED_SKILLS
++from agent import LoopData
++
++
++class IncludeLoadedSkills(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        extras = loop_data.extras_persistent
++
++        # Get loaded skills names
++        skill_names = self.agent.data.get(DATA_NAME_LOADED_SKILLS)
++        if not skill_names:
++            return
++
++        # load skill text here
++        content = ""
++        for skill_name in skill_names:
++            skill_data = skills.load_skill_for_agent(skill_name=skill_name, agent=self.agent)
++            content += "\n\n" + skill_data
++        content = content.strip()
++        if not content:
++            return
++
++
++        # Inject into extras
++        extras["loaded_skills"] = self.agent.read_prompt(
++            "agent.system.skills.loaded.md",
++            skills=content,
++        )
+diff --git a/extensions/python/message_loop_prompts_after/_70_include_agent_info.py b/extensions/python/message_loop_prompts_after/_70_include_agent_info.py
+new file mode 100644
+index 00000000..08976e8b
+--- /dev/null
++++ b/extensions/python/message_loop_prompts_after/_70_include_agent_info.py
+@@ -0,0 +1,21 @@
++from helpers.extension import Extension
++from agent import LoopData
++
++
++class IncludeAgentInfo(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        # read prompt
++        agent_info_prompt = self.agent.read_prompt(
++            "agent.extras.agent_info.md",
++            number=self.agent.number,
++            profile=self.agent.config.profile or "Default",
++            llm=self.agent.config.chat_model.provider
++            + "/"
++            + self.agent.config.chat_model.name,
++        )
++
++        # add agent info to the prompt
++        loop_data.extras_temporary["agent_info"] = agent_info_prompt
+diff --git a/extensions/python/message_loop_prompts_after/_75_include_workdir_extras.py b/extensions/python/message_loop_prompts_after/_75_include_workdir_extras.py
+new file mode 100644
+index 00000000..d823b819
+--- /dev/null
++++ b/extensions/python/message_loop_prompts_after/_75_include_workdir_extras.py
+@@ -0,0 +1,96 @@
++from helpers.extension import Extension
++from agent import LoopData
++from helpers import projects
++from helpers import settings
++from helpers import runtime
++from helpers import file_tree
++from helpers import files
++
++class IncludeWorkdirExtras(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        project_name = projects.get_context_project_name(self.agent.context)
++
++        enabled = False
++        max_depth = 0
++        max_files = 0
++        max_folders = 0
++        max_lines = 0
++        gitignore_raw = ""
++        folder = ""
++        file_structure = ""
++
++        if project_name:
++            project = projects.load_basic_project_data(project_name)
++            enabled = project["file_structure"]["enabled"]
++            
++            if not enabled:
++                return
++            
++            max_depth = project["file_structure"]["max_depth"]
++            gitignore_raw = project["file_structure"]["gitignore"]
++
++            folder = projects.get_project_folder(project_name)
++            if runtime.is_development():
++                folder = files.normalize_a0_path(folder)
++
++            file_structure = projects.get_file_structure(project_name)
++        else:
++            set = settings.get_settings()
++            enabled = bool(set["workdir_show"])
++
++            if not enabled:
++                return
++            
++            max_depth = set["workdir_max_depth"]
++            max_files = set["workdir_max_files"]
++            max_folders = set["workdir_max_folders"]
++            max_lines = set["workdir_max_lines"]
++            gitignore_raw = set["workdir_gitignore"]
++
++            folder = set["workdir_path"]
++            scan_path = files.get_abs_path_development(folder)
++
++            files.create_dir(scan_path)
++
++            file_structure = str(
++                file_tree.file_tree(
++                    scan_path,
++                    max_depth=max_depth,
++                    max_files=max_files,
++                    max_folders=max_folders,
++                    max_lines=max_lines,
++                    ignore=gitignore_raw,
++                    output_mode=file_tree.OUTPUT_MODE_STRING,
++                )
++            )
++
++        gitignore = cleanup_gitignore(gitignore_raw)
++
++        file_structure_prompt = self.agent.read_prompt(
++            "agent.extras.workdir_structure.md",
++            max_depth=max_depth,
++            gitignore=gitignore,
++            folder=folder,
++            file_structure=file_structure,
++        )
++
++        loop_data.extras_temporary["project_file_structure"] = file_structure_prompt
++
++
++def cleanup_gitignore(gitignore_raw: str) -> str:
++    """Process gitignore: split lines, strip, remove comments, remove empty lines."""
++    gitignore_lines = []
++    for line in gitignore_raw.split('\n'):
++        # Strip whitespace
++        line = line.strip()
++        # Remove inline comments (everything after #)
++        if '#' in line:
++            line = line.split('#')[0].strip()
++        # Keep only non-empty lines
++        if line:
++            gitignore_lines.append(line)
++    
++    return '\n'.join(gitignore_lines) if gitignore_lines else "nothing ignored"
+diff --git a/extensions/python/message_loop_prompts_before/.gitkeep b/extensions/python/message_loop_prompts_before/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/message_loop_prompts_before/_90_organize_history_wait.py b/extensions/python/message_loop_prompts_before/_90_organize_history_wait.py
+new file mode 100644
+index 00000000..903981ad
+--- /dev/null
++++ b/extensions/python/message_loop_prompts_before/_90_organize_history_wait.py
+@@ -0,0 +1,31 @@
++from helpers.extension import Extension
++from agent import LoopData
++from extensions.python.message_loop_end._10_organize_history import DATA_NAME_TASK
++from helpers.defer import DeferredTask, THREAD_BACKGROUND
++
++
++class OrganizeHistoryWait(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        # sync action only required if the history is too large, otherwise leave it in background
++        while self.agent.history.is_over_limit():
++            # get task
++            task: DeferredTask|None = self.agent.get_data(DATA_NAME_TASK) 
++
++            # Check if the task is already done
++            if task:
++                if not task.is_ready():
++                    self.agent.context.log.set_progress("Compressing history...")
++
++                # Wait for the task to complete
++                await task.result()
++
++                # Clear the coroutine data after it's done
++                self.agent.set_data(DATA_NAME_TASK, None)
++            else:
++                # no task was running, start and wait
++                self.agent.context.log.set_progress("Compressing history...")
++                await self.agent.history.compress()
++
+diff --git a/extensions/python/message_loop_start/.gitkeep b/extensions/python/message_loop_start/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/message_loop_start/_10_iteration_no.py b/extensions/python/message_loop_start/_10_iteration_no.py
+new file mode 100644
+index 00000000..81fc4af9
+--- /dev/null
++++ b/extensions/python/message_loop_start/_10_iteration_no.py
+@@ -0,0 +1,17 @@
++from helpers.extension import Extension
++from agent import Agent, LoopData
++
++DATA_NAME_ITER_NO = "iteration_no"
++
++class IterationNo(Extension):
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++            
++        # total iteration number
++        no = self.agent.get_data(DATA_NAME_ITER_NO) or 0
++        self.agent.set_data(DATA_NAME_ITER_NO, no + 1)
++
++
++def get_iter_no(agent: Agent) -> int:
++    return agent.get_data(DATA_NAME_ITER_NO) or 0
+\ No newline at end of file
+diff --git a/extensions/python/monologue_end/.gitkeep b/extensions/python/monologue_end/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/monologue_end/_90_waiting_for_input_msg.py b/extensions/python/monologue_end/_90_waiting_for_input_msg.py
+new file mode 100644
+index 00000000..09a025b1
+--- /dev/null
++++ b/extensions/python/monologue_end/_90_waiting_for_input_msg.py
+@@ -0,0 +1,12 @@
++from helpers.extension import Extension
++from agent import LoopData
++
++class WaitingForInputMsg(Extension):
++
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++            
++        # show temp info message
++        if self.agent.number == 0:
++            self.agent.context.log.set_initial_progress()
+diff --git a/extensions/python/monologue_start/.gitkeep b/extensions/python/monologue_start/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/monologue_start/_60_rename_chat.py b/extensions/python/monologue_start/_60_rename_chat.py
+new file mode 100644
+index 00000000..cebba5d1
+--- /dev/null
++++ b/extensions/python/monologue_start/_60_rename_chat.py
+@@ -0,0 +1,42 @@
++from helpers import persist_chat, tokens
++from helpers.extension import Extension
++from agent import LoopData
++import asyncio
++
++
++class RenameChat(Extension):
++
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        asyncio.create_task(self.change_name())
++
++    async def change_name(self):
++        if not self.agent:
++            return
++
++        try:
++            # prepare history
++            history_text = self.agent.history.output_text()
++            ctx_length = min(
++                int(self.agent.config.utility_model.ctx_length * 0.7), 5000
++            )
++            history_text = tokens.trim_to_tokens(history_text, ctx_length, "start")
++            # prepare system and user prompt
++            system = self.agent.read_prompt("fw.rename_chat.sys.md")
++            current_name = self.agent.context.name
++            message = self.agent.read_prompt(
++                "fw.rename_chat.msg.md", current_name=current_name, history=history_text
++            )
++            # call utility model
++            new_name = await self.agent.call_utility_model(
++                system=system, message=message, background=True
++            )
++            # update name
++            if new_name:
++                # trim name to max length if needed
++                if len(new_name) > 40:
++                    new_name = new_name[:40] + "..."
++                # apply to context and save
++                self.agent.context.name = new_name
++                persist_chat.save_tmp_chat(self.agent.context)
++        except Exception as e:
++            pass  # non-critical
+diff --git a/extensions/python/process_chain_end/.gitkeep b/extensions/python/process_chain_end/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/process_chain_end/_50_process_queue.py b/extensions/python/process_chain_end/_50_process_queue.py
+new file mode 100644
+index 00000000..912890f3
+--- /dev/null
++++ b/extensions/python/process_chain_end/_50_process_queue.py
+@@ -0,0 +1,37 @@
++import asyncio
++from helpers.extension import Extension
++from helpers import message_queue as mq
++from agent import AgentContext, Agent, LoopData
++
++
++class ProcessQueue(Extension):
++    """Process queued messages after monologue ends."""
++
++    async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
++        if not self.agent:
++            return
++
++        # Only process for agent0 (main agent)
++        if self.agent.number != 0:
++            return
++
++        context = self.agent.context
++
++        # Check if there are queued messages
++        if mq.has_queue(context):
++            # Schedule delayed task to send next queued message
++            # This allows current monologue to fully complete first
++            asyncio.create_task(self._delayed_send(context))
++
++    async def _delayed_send(self, context: AgentContext):
++        """Wait for task to complete, then send next queued message."""
++        
++        # Wait for current task to finish, but no more than 1 minute to prevent hanging tasks
++        total_wait = 0
++        while context.is_running() and total_wait < 60:
++            await asyncio.sleep(0.1)
++            total_wait += 0.1
++        
++        # Send next queued message if task is not running
++        if not context.is_running():
++            mq.send_next(context)
+diff --git a/extensions/python/reasoning_stream/.gitkeep b/extensions/python/reasoning_stream/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/reasoning_stream/_10_log_from_stream.py b/extensions/python/reasoning_stream/_10_log_from_stream.py
+new file mode 100644
+index 00000000..8f228b9b
+--- /dev/null
++++ b/extensions/python/reasoning_stream/_10_log_from_stream.py
+@@ -0,0 +1,34 @@
++from helpers import persist_chat, tokens
++from helpers.extension import Extension
++from agent import LoopData
++import asyncio
++from helpers.log import LogItem
++from helpers import log
++import math
++from extensions.python.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
++
++class LogFromStream(Extension):
++
++    async def execute(self, loop_data: LoopData = LoopData(), text: str = "", **kwargs):
++        if not self.agent:
++            return
++
++        # thought length indicator
++        length = f"({len(text)})" if text else ""
++        pipes = "|" * math.ceil(math.sqrt(len(text))/2)
++        heading = build_heading(self.agent, f"Reasoning... {pipes}")
++        step = f"Reasoning... {length}"
++
++        # create log message and store it in loop data temporary params
++        if "log_item_generating" not in loop_data.params_temporary:
++            loop_data.params_temporary["log_item_generating"] = (
++                self.agent.context.log.log(
++                    type="agent",
++                    heading=heading,
++                    step=step
++                )
++            )
++
++        # update log message
++        log_item = loop_data.params_temporary["log_item_generating"]
++        log_item.update(heading=heading, reasoning=text, step=step)
+diff --git a/extensions/python/reasoning_stream_chunk/.gitkeep b/extensions/python/reasoning_stream_chunk/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/reasoning_stream_chunk/_10_mask_stream.py b/extensions/python/reasoning_stream_chunk/_10_mask_stream.py
+new file mode 100644
+index 00000000..bd3adc85
+--- /dev/null
++++ b/extensions/python/reasoning_stream_chunk/_10_mask_stream.py
+@@ -0,0 +1,41 @@
++from helpers.extension import Extension
++from helpers.secrets import get_secrets_manager
++
++
++class MaskReasoningStreamChunk(Extension):
++    async def execute(self, **kwargs):
++        if not self.agent:
++            return
++            
++        # Get stream data and agent from kwargs
++        stream_data = kwargs.get("stream_data")
++        agent = kwargs.get("agent")
++        if not agent or not stream_data:
++            return
++
++        try:
++            secrets_mgr = get_secrets_manager(self.agent.context)
++
++            # Initialize filter if not exists
++            filter_key = "_reason_stream_filter"
++            filter_instance = agent.get_data(filter_key)
++            if not filter_instance:
++                filter_instance = secrets_mgr.create_streaming_filter()
++                agent.set_data(filter_key, filter_instance)
++
++            # Process the chunk through the streaming filter
++            processed_chunk = filter_instance.process_chunk(stream_data["chunk"])
++
++            # Update the stream data with processed chunk
++            stream_data["chunk"] = processed_chunk
++
++            # Also mask the full text for consistency
++            stream_data["full"] = secrets_mgr.mask_values(stream_data["full"])
++
++            # Print the processed chunk (this is where printing should happen)
++            if processed_chunk:
++                from helpers.print_style import PrintStyle
++                PrintStyle().stream(processed_chunk)
++        except Exception as e:
++            # If masking fails, proceed without masking
++            pass
+diff --git a/extensions/python/reasoning_stream_end/.gitkeep b/extensions/python/reasoning_stream_end/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/reasoning_stream_end/_10_mask_end.py b/extensions/python/reasoning_stream_end/_10_mask_end.py
+new file mode 100644
+index 00000000..89787c49
+--- /dev/null
++++ b/extensions/python/reasoning_stream_end/_10_mask_end.py
+@@ -0,0 +1,27 @@
++from helpers.extension import Extension
++
++
++class MaskReasoningStreamEnd(Extension):
++    async def execute(self, **kwargs):
++        # Get agent and finalize the streaming filter
++        agent = kwargs.get("agent")
++        if not agent:
++            return
++
++        try:
++            # Finalize the reasoning stream filter if it exists
++            filter_key = "_reason_stream_filter"
++            filter_instance = agent.get_data(filter_key)
++            if filter_instance:
++                tail = filter_instance.finalize()
++
++                # Print any remaining masked content
++                if tail:
++                    from helpers.print_style import PrintStyle
++                    PrintStyle().stream(tail)
++
++                # Clean up the filter
++                agent.set_data(filter_key, None)
++        except Exception as e:
++            # If masking fails, proceed without masking
++            pass
+diff --git a/extensions/python/response_stream/.gitkeep b/extensions/python/response_stream/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/response_stream/_10_log_from_stream.py b/extensions/python/response_stream/_10_log_from_stream.py
+new file mode 100644
+index 00000000..4df102b5
+--- /dev/null
++++ b/extensions/python/response_stream/_10_log_from_stream.py
+@@ -0,0 +1,72 @@
++from helpers import persist_chat, tokens
++from helpers.extension import Extension
++from agent import LoopData
++import asyncio
++from helpers.log import LogItem
++from helpers import log
++import math
++from extensions.python.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
++
++
++class LogFromStream(Extension):
++
++    async def execute(
++        self,
++        loop_data: LoopData = LoopData(),
++        text: str = "",
++        parsed: dict = {},
++        **kwargs,
++    ):
++        if not self.agent:
++            return
++
++        heading = build_default_heading(self.agent)
++        if "headline" in parsed:
++            heading = build_heading(self.agent, parsed['headline'])
++        elif "tool_name" in parsed:
++            heading = build_heading(self.agent, f"Using {parsed['tool_name']}") # if the llm skipped headline
++        elif "thoughts" in parsed:
++            # thought length indicator
++            length = "|" * math.ceil(math.sqrt(len(text))/2)
++            heading = build_heading(self.agent, f"Thinking... {length}")
++        else:
++            heading = build_heading(self.agent, "Receiving...")
++        
++        # create log message and store it in loop data temporary params
++        if "log_item_generating" not in loop_data.params_temporary:
++            loop_data.params_temporary["log_item_generating"] = (
++                self.agent.context.log.log(
++                    type="agent",
++                    heading=heading,
++                )
++            )
++
++        # update log message
++        log_item = loop_data.params_temporary["log_item_generating"]
++
++        # keep reasoning from previous logs in kvps
++        kvps = {}
++        if log_item.kvps is not None and "reasoning" in log_item.kvps:
++            kvps["reasoning"] = log_item.kvps["reasoning"]
++        
++        # step description for UI - using tool XY, writing Python code, etc.
++        if parsed is not None and "tool_name" in parsed and parsed["tool_name"]:
++            kvps["step"] = f"Using {parsed['tool_name']}..." # using tool XY
++            if parsed["tool_name"]=="code_execution_tool":
++                if "tool_args" in parsed and "runtime" in parsed["tool_args"]:
++                    length = ""
++                    if "code" in parsed["tool_args"]:
++                        length = f"({len(parsed['tool_args']['code'])})"
++                        kvps["step"] = f"Writing code... {length}"
++                    if parsed["tool_args"]["runtime"] == "python":
++                        kvps["step"] = f"Writing Python code... {length}"
++                    elif parsed["tool_args"]["runtime"] == "nodejs":
++                        kvps["step"] = f"Writing Node.js code... {length}"
++                    elif parsed["tool_args"]["runtime"] == "terminal":
++                        kvps["step"] = f"Writing terminal command... {length}"
++        kvps.update(parsed)
++
++
++
++        # update the log item
++        log_item.update(heading=heading, content=text, kvps=kvps)
+\ No newline at end of file
+diff --git a/extensions/python/response_stream/_15_replace_include_alias.py b/extensions/python/response_stream/_15_replace_include_alias.py
+new file mode 100644
+index 00000000..0994b75f
+--- /dev/null
++++ b/extensions/python/response_stream/_15_replace_include_alias.py
+@@ -0,0 +1,31 @@
++from typing import Any
++from helpers.extension import Extension
++from helpers.strings import replace_file_includes
++
++
++class ReplaceIncludeAlias(Extension):
++    async def execute(
++        self,
++        loop_data=None,
++        text: str = "",
++        parsed: dict[str, Any] | None = None,
++        **kwargs
++    ):
++        if not parsed or not isinstance(parsed, dict):
++            return
++
++        def replace_placeholders(value: Any) -> Any:
++            if isinstance(value, str):
++                new_val = value
++                new_val = replace_file_includes(new_val, r"§§include\(([^)]+)\)")
++                return new_val
++            if isinstance(value, dict):
++                return {k: replace_placeholders(v) for k, v in value.items()}
++            if isinstance(value, list):
++                return [replace_placeholders(v) for v in value]
++            if isinstance(value, tuple):
++                return tuple(replace_placeholders(v) for v in value)
++            return value
++
++        if "tool_args" in parsed and "tool_name" in parsed:
++            parsed["tool_args"] = replace_placeholders(parsed["tool_args"])
+diff --git a/extensions/python/response_stream/_20_live_response.py b/extensions/python/response_stream/_20_live_response.py
+new file mode 100644
+index 00000000..25535811
+--- /dev/null
++++ b/extensions/python/response_stream/_20_live_response.py
+@@ -0,0 +1,44 @@
++from helpers import persist_chat, tokens
++from helpers.extension import Extension
++from agent import LoopData
++import asyncio
++from helpers.log import LogItem
++from helpers import log
++
++
++class LiveResponse(Extension):
++
++    async def execute(
++        self,
++        loop_data: LoopData = LoopData(),
++        text: str = "",
++        parsed: dict = {},
++        **kwargs,
++    ):
++        if not self.agent:
++            return
++            
++        try:
++            if (
++                not "tool_name" in parsed
++                or parsed["tool_name"] != "response"
++                or "tool_args" not in parsed
++                or "text" not in parsed["tool_args"]
++                or not parsed["tool_args"]["text"]
++            ):
++                return  # not a response
++
++            # create log message and store it in loop data temporary params
++            if "log_item_response" not in loop_data.params_temporary:
++                loop_data.params_temporary["log_item_response"] = (
++                    self.agent.context.log.log(
++                        type="response",
++                        heading=f"icon://chat {self.agent.agent_name}: Responding",
++                    )
++                )
++
++            # update log message
++            log_item = loop_data.params_temporary["log_item_response"]
++            log_item.update(content=parsed["tool_args"]["text"])
++        except Exception as e:
++            pass
+diff --git a/extensions/python/response_stream_chunk/.gitkeep b/extensions/python/response_stream_chunk/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/response_stream_chunk/_10_mask_stream.py b/extensions/python/response_stream_chunk/_10_mask_stream.py
+new file mode 100644
+index 00000000..4690df66
+--- /dev/null
++++ b/extensions/python/response_stream_chunk/_10_mask_stream.py
+@@ -0,0 +1,43 @@
++from helpers.extension import Extension
++from agent import Agent, LoopData
++from helpers.secrets import get_secrets_manager
++
++
++class MaskResponseStreamChunk(Extension):
++
++    async def execute(self, **kwargs):
++        if not self.agent:
++            return
++
++        # Get stream data and agent from kwargs
++        stream_data = kwargs.get("stream_data")
++        agent = kwargs.get("agent")
++        if not agent or not stream_data:
++            return
++
++        try:
++            secrets_mgr = get_secrets_manager(self.agent.context)
++
++            # Initialize filter if not exists
++            filter_key = "_resp_stream_filter"
++            filter_instance = agent.get_data(filter_key)
++            if not filter_instance:
++                filter_instance = secrets_mgr.create_streaming_filter()
++                agent.set_data(filter_key, filter_instance)
++
++            # Process the chunk through the streaming filter
++            processed_chunk = filter_instance.process_chunk(stream_data["chunk"])
++
++            # Update the stream data with processed chunk
++            stream_data["chunk"] = processed_chunk
++
++            # Also mask the full text for consistency
++            stream_data["full"] = secrets_mgr.mask_values(stream_data["full"])
++
++            # Print the processed chunk (this is where printing should happen)
++            if processed_chunk:
++                from helpers.print_style import PrintStyle
++                PrintStyle().stream(processed_chunk)
++        except Exception as e:
++            # If masking fails, proceed without masking
++            pass
+diff --git a/extensions/python/response_stream_end/.gitkeep b/extensions/python/response_stream_end/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/response_stream_end/_10_mask_end.py b/extensions/python/response_stream_end/_10_mask_end.py
+new file mode 100644
+index 00000000..1d277331
+--- /dev/null
++++ b/extensions/python/response_stream_end/_10_mask_end.py
+@@ -0,0 +1,28 @@
++from helpers.extension import Extension
++from helpers.secrets import SecretsManager
++
++
++class MaskResponseStreamEnd(Extension):
++    async def execute(self, **kwargs):
++        # Get agent and finalize the streaming filter
++        agent = kwargs.get("agent")
++        if not agent:
++            return
++
++        try:
++            # Finalize the response stream filter if it exists
++            filter_key = "_resp_stream_filter"
++            filter_instance = agent.get_data(filter_key)
++            if filter_instance:
++                tail = filter_instance.finalize()
++
++                # Print any remaining masked content
++                if tail:
++                    from helpers.print_style import PrintStyle
++                    PrintStyle().stream(tail)
++
++                # Clean up the filter
++                agent.set_data(filter_key, None)
++        except Exception as e:
++            # If masking fails, proceed without masking
++            pass
+diff --git a/extensions/python/response_stream_end/_15_log_from_stream_end.py b/extensions/python/response_stream_end/_15_log_from_stream_end.py
+new file mode 100644
+index 00000000..b23adb31
+--- /dev/null
++++ b/extensions/python/response_stream_end/_15_log_from_stream_end.py
+@@ -0,0 +1,31 @@
++from helpers import persist_chat, tokens
++from helpers.extension import Extension
++from agent import LoopData
++import asyncio
++from helpers.log import LogItem
++from helpers import log
++import math
++from extensions.python.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
++
++
++class LogFromStream(Extension):
++
++    async def execute(
++        self,
++        loop_data: LoopData = LoopData(),
++        text: str = "",
++        parsed: dict = {},
++        **kwargs,
++    ):
++
++        # get log item from loop data temporary params
++        log_item = loop_data.params_temporary["log_item_generating"]
++        if log_item is None:
++            return
++
++        # remove step parameter when done
++        if log_item.kvps is not None and "step" in log_item.kvps:
++            del log_item.kvps["step"]
++
++        # update the log item
++        log_item.update(kvps=log_item.kvps)
+\ No newline at end of file
+diff --git a/extensions/python/system_prompt/.gitkeep b/extensions/python/system_prompt/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/system_prompt/_10_system_prompt.py b/extensions/python/system_prompt/_10_system_prompt.py
+new file mode 100644
+index 00000000..5901af27
+--- /dev/null
++++ b/extensions/python/system_prompt/_10_system_prompt.py
+@@ -0,0 +1,99 @@
++from typing import Any
++from helpers.extension import Extension
++from helpers.mcp_handler import MCPConfig
++from agent import Agent, LoopData
++from helpers.settings import get_settings
++from helpers import projects, skills
++
++
++class SystemPrompt(Extension):
++
++    async def execute(
++        self,
++        system_prompt: list[str] = [],
++        loop_data: LoopData = LoopData(),
++        **kwargs: Any
++    ):
++        if not self.agent:
++            return
++
++        # append main system prompt and tools
++        main = get_main_prompt(self.agent)
++        tools = get_tools_prompt(self.agent)
++        mcp_tools = get_mcp_tools_prompt(self.agent)
++        skills = get_skills_prompt(self.agent)
++        secrets_prompt = get_secrets_prompt(self.agent)
++        project_prompt = get_project_prompt(self.agent)
++
++        system_prompt.append(main)
++        system_prompt.append(tools)
++        if mcp_tools:
++            system_prompt.append(mcp_tools)
++        if skills:
++            system_prompt.append(skills)
++        if secrets_prompt:
++            system_prompt.append(secrets_prompt)
++        if project_prompt:
++            system_prompt.append(project_prompt)
++       
++
++def get_main_prompt(agent: Agent):
++    return agent.read_prompt("agent.system.main.md")
++
++
++def get_tools_prompt(agent: Agent):
++    prompt = agent.read_prompt("agent.system.tools.md")
++    if agent.config.chat_model.vision:
++        prompt += "\n\n" + agent.read_prompt("agent.system.tools_vision.md")
++    return prompt
++
++
++def get_mcp_tools_prompt(agent: Agent):
++    mcp_config = MCPConfig.get_instance()
++    if mcp_config.servers:
++        pre_progress = agent.context.log.progress
++        agent.context.log.set_progress(
++            "Collecting MCP tools"
++        )  # MCP might be initializing, better inform via progress bar
++        tools = MCPConfig.get_instance().get_tools_prompt()
++        agent.context.log.set_progress(pre_progress)  # return original progress
++        return tools
++    return ""
++
++
++def get_secrets_prompt(agent: Agent):
++    try:
++        # Use lazy import to avoid circular dependencies
++        from helpers.secrets import get_secrets_manager
++
++        secrets_manager = get_secrets_manager(agent.context)
++        secrets = secrets_manager.get_secrets_for_prompt()
++        vars = get_settings()["variables"]
++        return agent.read_prompt("agent.system.secrets.md", secrets=secrets, vars=vars)
++    except Exception as e:
++        # If secrets module is not available or has issues, return empty string
++        return ""
++
++
++def get_project_prompt(agent: Agent):
++    result = agent.read_prompt("agent.system.projects.main.md")
++    project_name = agent.context.get_data(projects.CONTEXT_DATA_KEY_PROJECT)
++    if project_name:
++        project_vars = projects.build_system_prompt_vars(project_name)
++        result += "\n\n" + agent.read_prompt(
++            "agent.system.projects.active.md", **project_vars
++        )
++    else:
++        result += "\n\n" + agent.read_prompt("agent.system.projects.inactive.md")
++    return result
++
++def get_skills_prompt(agent: Agent):
++    available = skills.list_skills(agent=agent)
++    result = []
++    for skill in available:
++        name = skill.name.strip().replace("\n", " ")[:100]
++        descr = skill.description.replace("\n", " ")[:500]
++        result.append(f"**{name}** {descr}")
++
++    if result:
++        return agent.read_prompt("agent.system.skills.md", skills="\n".join(result))
+diff --git a/extensions/python/tool_execute_after/.gitkeep b/extensions/python/tool_execute_after/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/tool_execute_after/_10_mask_secrets.py b/extensions/python/tool_execute_after/_10_mask_secrets.py
+new file mode 100644
+index 00000000..362706fd
+--- /dev/null
++++ b/extensions/python/tool_execute_after/_10_mask_secrets.py
+@@ -0,0 +1,15 @@
++from helpers.extension import Extension
++from helpers.secrets import get_secrets_manager
++from helpers.tool import Response
++
++
++class MaskToolSecrets(Extension):
++
++    async def execute(self, response: Response | None = None, **kwargs):
++        if not self.agent:
++            return
++
++        if not response:
++            return
++        secrets_mgr = get_secrets_manager(self.agent.context)
++        response.message = secrets_mgr.mask_values(response.message)
+diff --git a/extensions/python/tool_execute_before/.gitkeep b/extensions/python/tool_execute_before/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/tool_execute_before/_10_replace_last_tool_output.py b/extensions/python/tool_execute_before/_10_replace_last_tool_output.py
+new file mode 100644
+index 00000000..c1cdb388
+--- /dev/null
++++ b/extensions/python/tool_execute_before/_10_replace_last_tool_output.py
+@@ -0,0 +1,36 @@
++from typing import Any
++from helpers.extension import Extension
++
++
++class ReplaceLastToolOutput(Extension):
++    async def execute(self, tool_args: dict[str, Any] | None = None, tool_name: str = "", **kwargs):
++        if not self.agent:
++            return
++
++        if not tool_args:
++            return
++
++        last_call = self.agent.get_data("last_tool_call") or {}
++        last_output = last_call.get("last_tool_output", "")
++        if not last_output:
++            return
++
++        tokens = ("{last_tool_output}", "{{last_tool_output}}")
++
++        def replace_placeholders(value: Any) -> Any:
++            if isinstance(value, str):
++                new_val = value
++                for token in tokens:
++                    new_val = new_val.replace(token, last_output)
++                return new_val
++            if isinstance(value, dict):
++                return {k: replace_placeholders(v) for k, v in value.items()}
++            if isinstance(value, list):
++                return [replace_placeholders(v) for v in value]
++            if isinstance(value, tuple):
++                return tuple(replace_placeholders(v) for v in value)
++            return value
++
++        updated_args = replace_placeholders(tool_args)
++        tool_args.clear()
++        tool_args.update(updated_args)
+diff --git a/extensions/python/tool_execute_before/_10_unmask_secrets.py b/extensions/python/tool_execute_before/_10_unmask_secrets.py
+new file mode 100644
+index 00000000..3ec649d5
+--- /dev/null
++++ b/extensions/python/tool_execute_before/_10_unmask_secrets.py
+@@ -0,0 +1,21 @@
++from helpers.extension import Extension
++from helpers.secrets import get_secrets_manager
++
++
++class UnmaskToolSecrets(Extension):
++
++    async def execute(self, **kwargs):
++        if not self.agent:
++            return
++
++        # Get tool args from kwargs
++        tool_args = kwargs.get("tool_args")
++        if not tool_args:
++            return
++
++        secrets_mgr = get_secrets_manager(self.agent.context)
++
++        # Unmask placeholders in args for actual tool execution
++        for k, v in tool_args.items():
++            if isinstance(v, str):
++                tool_args[k] = secrets_mgr.replace_placeholders(v)
+diff --git a/extensions/python/user_message_ui/.gitkeep b/extensions/python/user_message_ui/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/user_message_ui/_10_update_check.py b/extensions/python/user_message_ui/_10_update_check.py
+new file mode 100644
+index 00000000..74650b9c
+--- /dev/null
++++ b/extensions/python/user_message_ui/_10_update_check.py
+@@ -0,0 +1,64 @@
++from helpers import notification
++from helpers.extension import Extension
++from agent import LoopData
++from helpers import settings, update_check
++import datetime
++
++
++# check for newer versions of A0 available and send notification
++# check after user message is sent from UI, not API, MCP etc. (user is active and can see the notification)
++# do not check too often, use cooldown
++# do not notify too often unless there's a different notification
++
++last_check = datetime.datetime.fromtimestamp(0)
++check_cooldown_seconds = 60
++last_notification_id = ""
++last_notification_time = datetime.datetime.fromtimestamp(0)
++notification_cooldown_seconds = 60 * 60 * 24
++
++class UpdateCheck(Extension):
++
++    async def execute(self, loop_data: LoopData = LoopData(), text: str = "", **kwargs):
++        if not self.agent:
++            return
++
++        try:
++            global last_check, last_notification_id, last_notification_time
++            
++            # first check if update check is enabled
++            current_settings = settings.get_settings()
++            if not current_settings["update_check_enabled"]:
++                return
++            
++            # check if cooldown has passed
++            if (datetime.datetime.now() - last_check).total_seconds() < check_cooldown_seconds:
++                return
++            last_check = datetime.datetime.now()
++            
++            # check for updates
++            version = await update_check.check_version()
++
++            # if the user should update, send notification
++            if notif := version.get("notification"):
++                if notif.get("id") != last_notification_id or (datetime.datetime.now() - last_notification_time).total_seconds() > notification_cooldown_seconds:
++                    last_notification_id = notif.get("id")
++                    last_notification_time = datetime.datetime.now()
++                    self.send_notification(notif)
++        except Exception as e:
++            pass # no need to log if the update server is inaccessible
++
++
++    def send_notification(self, notif):
++        if not self.agent:
++            return
++
++        notifs = self.agent.context.get_notification_manager()
++        notifs.send_notification(
++            title=notif.get("title", "Newer version available"),
++            message=notif.get("message", "A newer version of Agent Zero is available. Please update to the latest version."),
++            type=notif.get("type", "info"),
++            detail=notif.get("detail", ""),
++            display_time=notif.get("display_time", 10),
++            group=notif.get("group", "update_check"),
++            priority=notif.get("priority", notification.NotificationPriority.NORMAL),
++        )
+diff --git a/extensions/python/util_model_call_before/.gitkeep b/extensions/python/util_model_call_before/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/python/util_model_call_before/_10_mask_secrets.py b/extensions/python/util_model_call_before/_10_mask_secrets.py
+new file mode 100644
+index 00000000..60b9545d
+--- /dev/null
++++ b/extensions/python/util_model_call_before/_10_mask_secrets.py
+@@ -0,0 +1,20 @@
++from helpers.extension import Extension
++from helpers.secrets import get_secrets_manager
++
++
++class MaskToolSecrets(Extension):
++
++    async def execute(self, **kwargs):
++        if not self.agent:
++            return
++            
++        # model call data
++        call_data:dict = kwargs.get("call_data", {})
++            
++        secrets_mgr = get_secrets_manager(self.agent.context)
++        
++        # mask system and user message
++        if system:=call_data.get("system"):
++            call_data["system"] = secrets_mgr.mask_values(system)
++        if message:=call_data.get("message"):
++            call_data["message"] = secrets_mgr.mask_values(message)
+\ No newline at end of file
+diff --git a/extensions/webui/.gitkeep b/extensions/webui/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/fetch_api_call_after/.gitkeep b/extensions/webui/fetch_api_call_after/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/fetch_api_call_before/.gitkeep b/extensions/webui/fetch_api_call_before/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/get_message_handler/.gitkeep b/extensions/webui/get_message_handler/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/json_api_call_after/.gitkeep b/extensions/webui/json_api_call_after/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/json_api_call_after/cache_reset.js b/extensions/webui/json_api_call_after/cache_reset.js
+new file mode 100644
+index 00000000..b09e96bb
+--- /dev/null
++++ b/extensions/webui/json_api_call_after/cache_reset.js
+@@ -0,0 +1,14 @@
++import { clear } from "/js/cache.js";
++
++export default async function resetCache(ctx) {
++  try {
++    // clear frontend cache areas when backend caches are cleared via API
++    if (ctx.endpoint == "cache_reset") {
++      for (const area of ctx.data.areas) {
++        clear(area);
++      }
++    }
++  } catch (e) {
++    console.error(e);
++  }
++}
+diff --git a/extensions/webui/json_api_call_before/.gitkeep b/extensions/webui/json_api_call_before/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/set_messages_after_loop/.gitkeep b/extensions/webui/set_messages_after_loop/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/extensions/webui/set_messages_before_loop/.gitkeep b/extensions/webui/set_messages_before_loop/.gitkeep
+new file mode 100644
+index 00000000..e69de29b

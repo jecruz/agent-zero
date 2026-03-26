@@ -1,0 +1,12 @@
+docs/agents/AGENTS.components.md
+docs/agents/AGENTS.modals.md
+docs/agents/AGENTS.plugins.md
+docs/developer/agent-handoff-stop-and-throughput.md
+docs/developer/contributing-skills.md
+docs/developer/extensions.md
+docs/developer/notifications.md
+docs/developer/plugins.md
+docs/developer/websockets.md
+docs/guides/projects.md
+docs/guides/usage.md
+docs/README.md

@@ -1,0 +1,5 @@
+docs/agents/AGENTS.components.md
+docs/agents/AGENTS.modals.md
+docs/agents/AGENTS.plugins.md
+docs/developer/agent-handoff-stop-and-throughput.md
+docs/developer/plugins.md
