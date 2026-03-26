@@ -7,13 +7,21 @@ import { store as chatsStore } from "/components/sidebar/chats/chats-store.js";
 
 const model = {
   paused: false,
+  canceled: false,
   message: "",
+  
+  // Prompt history for Up arrow cycling
+  promptHistory: [],
+  promptHistoryIndex: -1,
+  MAX_HISTORY: 10,
 
   _getSendState() {
     const hasInput = this.message.trim() || attachmentsStore?.attachments?.length > 0;
     const hasQueue = !!messageQueueStore?.hasQueue;
     const running = !!chatsStore.selectedContext?.running;
 
+    if (this.paused) return "paused";
+    if (running) return "processing";
     if (hasQueue && !hasInput) return "all";
     if ((running || hasQueue) && hasInput) return "queue";
     return "normal";
@@ -22,12 +30,16 @@ const model = {
   get inputPlaceholder() {
     const state = this._getSendState();
     if (state === "all") return "Press Enter to send queued messages";
+    if (state === "processing") return "Processing...";
+    if (state === "paused") return "Paused - press Enter to resume";
     return "Type your message here...";
   },
 
   // Computed: send button icon type
   get sendButtonIcon() {
     const state = this._getSendState();
+    if (state === "paused") return "play_arrow";
+    if (state === "processing") return "pause";
     if (state === "all") return "send_and_archive";
     if (state === "queue") return "schedule_send";
     return "send";
@@ -36,6 +48,8 @@ const model = {
   // Computed: send button CSS class
   get sendButtonClass() {
     const state = this._getSendState();
+    if (state === "paused") return "send-paused";
+    if (state === "processing") return "send-processing";
     if (state === "all") return "send-queue send-all";
     if (state === "queue") return "send-queue queue";
     return "";
@@ -44,6 +58,8 @@ const model = {
   // Computed: send button title
   get sendButtonTitle() {
     const state = this._getSendState();
+    if (state === "paused") return "Resume Agent";
+    if (state === "processing") return "Pause Agent";
     if (state === "all") return "Send all queued messages";
     if (state === "queue") return "Add to queue";
     return "Send message";
@@ -73,6 +89,7 @@ const model = {
   async pauseAgent(paused) {
     const prev = this.paused;
     this.paused = paused;
+    this.canceled = false;
     try {
       const context = globalThis.getContext?.();
       if (!globalThis.sendJsonData)
@@ -83,6 +100,66 @@ const model = {
       if (globalThis.toastFetchError) {
         globalThis.toastFetchError("Error pausing agent", e);
       }
+    }
+  },
+
+  async stopAgent() {
+    const prev = this.canceled;
+    this.canceled = true;
+    this.paused = false;
+    try {
+      const context = globalThis.getContext?.();
+      if (!globalThis.sendJsonData)
+        throw new Error("sendJsonData not available");
+      await globalThis.sendJsonData("/chat_stop", { context });
+    } catch (e) {
+      this.canceled = prev;
+      if (globalThis.toastFetchError) {
+        globalThis.toastFetchError("Error stopping agent", e);
+      }
+    }
+  },
+
+  // Add current message to prompt history
+  _addToHistory(message) {
+    if (!message?.trim()) return;
+    // Remove duplicate if exists
+    const idx = this.promptHistory.indexOf(message);
+    if (idx !== -1) {
+      this.promptHistory.splice(idx, 1);
+    }
+    // Add to beginning
+    this.promptHistory.unshift(message);
+    // Trim to max size
+    if (this.promptHistory.length > this.MAX_HISTORY) {
+      this.promptHistory.pop();
+    }
+    // Reset index to beginning (most recent)
+    this.promptHistoryIndex = 0;
+  },
+
+  // Cycle to previous prompt in history (Up arrow)
+  cycleHistoryUp() {
+    if (this.promptHistory.length === 0) return false;
+    if (this.promptHistoryIndex < this.promptHistory.length - 1) {
+      this.promptHistoryIndex++;
+      this.message = this.promptHistory[this.promptHistoryIndex];
+      return true;
+    }
+    return false;
+  },
+
+  // Cycle to next prompt in history (Down arrow)
+  cycleHistoryDown() {
+    if (this.promptHistory.length === 0) return false;
+    if (this.promptHistoryIndex > 0) {
+      this.promptHistoryIndex--;
+      this.message = this.promptHistory[this.promptHistoryIndex];
+      return true;
+    } else {
+      this.promptHistoryIndex = -1;
+      this.message = "";
+      return true;
     }
   },
 
@@ -204,6 +281,8 @@ const model = {
 
   reset() {
     this.message = "";
+    this.canceled = false;
+    this.promptHistoryIndex = -1;
     attachmentsStore.clearAttachments();
     this.adjustTextareaHeight();
   }

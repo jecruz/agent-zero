@@ -4,6 +4,7 @@ import { marked } from "../vendor/marked/marked.esm.js";
 import { store as _messageResizeStore } from "/components/messages/resize/message-resize-store.js"; // keep here, required in html
 import { store as attachmentsStore } from "/components/chat/attachments/attachmentsStore.js";
 import { store as speechStore } from "/components/chat/speech/speech-store.js";
+import { store as inputStore } from "/components/chat/input/input-store.js";
 import {
   createActionButton,
   copyToClipboard,
@@ -1106,6 +1107,17 @@ export function drawMessageUser({
     ? [
         createActionButton("speak", "", () => speechStore.speak(userText)),
         createActionButton("copy", "", () => copyToClipboard(userText)),
+        createActionButton("resubmit", "", () => {
+          // Set the message in input store and trigger send
+          inputStore.message = userText;
+          inputStore._addToHistory(userText);
+          // Focus and trigger send
+          const chatInput = document.getElementById("chat-input");
+          if (chatInput) {
+            chatInput.focus();
+            globalThis.sendMessage?.();
+          }
+        }),
       ].filter(Boolean)
     : [];
   const actionButtonsContainer = ensureChild(

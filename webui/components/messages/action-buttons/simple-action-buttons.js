@@ -4,12 +4,14 @@ const ACTION_ICON_MAP = {
   detail: "open_in_full",
   speak: "volume_up",
   copy: "content_copy",
+  resubmit: "replay",
 };
 
 const ACTION_LABELS = {
   detail: "View details",
   speak: "Speak",
   copy: "Copy",
+  resubmit: "Resubmit",
 };
 
 function resolveActionIcon(icon) {
