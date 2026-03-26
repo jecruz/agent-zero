@@ -5,7 +5,7 @@ import asyncio
 from helpers.log import LogItem
 from helpers import log
 import math
-from extensions.python.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
+from extensions.before_main_llm_call._10_log_for_stream import build_heading, build_default_heading
 
 class LogFromStream(Extension):
 

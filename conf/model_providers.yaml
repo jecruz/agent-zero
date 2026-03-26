@@ -56,6 +56,11 @@ chat:
   mistral:
     name: Mistral AI
     litellm_provider: mistral
+  minimax:
+    name: MiniMax
+    litellm_provider: openai
+    kwargs:
+      api_base: https://api.minimax.io/v1
   moonshot:
     name: Moonshot AI
     litellm_provider: moonshot

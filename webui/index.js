@@ -74,6 +74,9 @@ export async function sendMessage() {
       let response;
       const messageId = generateGUID();
 
+      // Add to prompt history before clearing
+      inputStore._addToHistory(message);
+
     // Clear input and attachments
     inputStore.reset();
     adjustTextareaHeight();
