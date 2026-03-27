@@ -20,6 +20,12 @@ def import_module(file_path: str) -> ModuleType:
         raise ImportError(f"Could not load module from {abs_path}")
 
     module = importlib.util.module_from_spec(spec)
+    # Add base_dir to sys.path so absolute imports in dynamically-loaded extension
+    # modules can resolve packages like 'extensions' that live under the base directory
+    from helpers.files import get_base_dir
+    base_dir = get_base_dir()
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
     spec.loader.exec_module(module)
     return module
 
