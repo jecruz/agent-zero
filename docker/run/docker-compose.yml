@@ -1,8 +1,18 @@
 services:
   agent-zero:
     container_name: agent-zero
-    image: agent0ai/agent-zero:latest
+    image: agent-zero:dev
     volumes:
-      - ./agent-zero:/a0
+      - ./agent-zero/usr:/a0/usr
+      - ./agent-zero/conf:/a0/conf
     ports:
-      - "50080:80"
+      - "50011:80"
+    # Allow container to reach host services via host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - A0_LLM_PORT_8787=http://host.docker.internal:8787
+      - A0_LLM_PORT_4521=http://host.docker.internal:4521
+      - A0_LLM_PORT_4523=http://host.docker.internal:4523
+    restart: unless-stopped

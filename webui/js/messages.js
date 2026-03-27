@@ -4,6 +4,7 @@ import { marked } from "../vendor/marked/marked.esm.js";
 import { store as _messageResizeStore } from "/components/messages/resize/message-resize-store.js"; // keep here, required in html
 import { store as attachmentsStore } from "/components/chat/attachments/attachmentsStore.js";
 import { store as speechStore } from "/components/chat/speech/speech-store.js";
+import { store as inputStore } from "/components/chat/input/input-store.js";
 import {
   createActionButton,
   copyToClipboard,
@@ -445,6 +446,12 @@ export function drawProcessStep({
 
   // is step expanded?
   const isExpanded = step.classList.contains("expanded");
+  const tokensPerSecond = Number(log?.kvps?.tokens_per_second);
+  if (Number.isFinite(tokensPerSecond) && tokensPerSecond > 0) {
+    step.setAttribute("data-tokens-per-second", String(tokensPerSecond));
+  } else {
+    step.removeAttribute("data-tokens-per-second");
+  }
 
   // create step header
   const stepHeader = ensureChild(
@@ -842,6 +849,10 @@ export function drawMessageAgent({
   let displayKvps = {};
   if (kvps?.thoughts) displayKvps["icon://lightbulb[Thoughts]"] = kvps.thoughts;
   if (kvps?.step) displayKvps["icon://step[Step]"] = kvps.step;
+  const tokensPerSecond = Number(kvps?.tokens_per_second);
+  if (Number.isFinite(tokensPerSecond) && tokensPerSecond > 0) {
+    displayKvps["icon://speed[Throughput]"] = `${tokensPerSecond.toFixed(1)} tok/s`;
+  }
   const thoughtsText = String(kvps?.thoughts ?? "");
   const headerLabels = [
     kvps?.tool_name && { label: kvps.tool_name, class: "tool-name-badge" },
@@ -1106,6 +1117,17 @@ export function drawMessageUser({
     ? [
         createActionButton("speak", "", () => speechStore.speak(userText)),
         createActionButton("copy", "", () => copyToClipboard(userText)),
+        createActionButton("resubmit", "", () => {
+          // Set the message in input store and trigger send
+          inputStore.message = userText;
+          inputStore._addToHistory(userText);
+          // Focus and trigger send
+          const chatInput = document.getElementById("chat-input");
+          if (chatInput) {
+            chatInput.focus();
+            globalThis.sendMessage?.();
+          }
+        }),
       ].filter(Boolean)
     : [];
   const actionButtonsContainer = ensureChild(
@@ -1875,6 +1897,7 @@ function createProcessGroup(id) {
       <span class="metric-steps display-none" title="Steps"><span class="material-symbols-outlined">footprint</span><span class="metric-value">0</span></span>
       <span class="metric-notifications" title="Warnings/Info/Hint" hidden><span class="material-symbols-outlined">priority_high</span><span class="metric-value">0</span></span>
       <span class="metric-duration display-none" title="Duration"><span class="material-symbols-outlined">timer</span><span class="metric-value">--</span></span>
+      <span class="metric-throughput display-none" title="Generation throughput"><span class="material-symbols-outlined">speed</span><span class="metric-value">--</span></span>
 
     </span>
   `;
@@ -2182,6 +2205,31 @@ function updateProcessGroupHeader(group) {
     durationMetricContainerEl.classList.remove("display-none");
   } else if (durationMetricContainerEl) {
     durationMetricContainerEl.classList.add("display-none");
+  }
+
+  const throughputMetricContainerEl =
+    metricsEl?.querySelector(".metric-throughput");
+  const throughputMetricValEl =
+    throughputMetricContainerEl?.querySelector(".metric-value");
+  const latestThroughputStep = [...steps]
+    .reverse()
+    .find((step) => {
+      const value = Number(step.getAttribute("data-tokens-per-second"));
+      return Number.isFinite(value) && value > 0;
+    });
+  const throughputValue = latestThroughputStep
+    ? Number(latestThroughputStep.getAttribute("data-tokens-per-second"))
+    : NaN;
+  if (
+    throughputMetricContainerEl &&
+    throughputMetricValEl &&
+    Number.isFinite(throughputValue) &&
+    throughputValue > 0
+  ) {
+    throughputMetricValEl.textContent = `${throughputValue.toFixed(1)} tok/s`;
+    throughputMetricContainerEl.classList.remove("display-none");
+  } else if (throughputMetricContainerEl) {
+    throughputMetricContainerEl.classList.add("display-none");
   }
 
   if (notificationsEl) {

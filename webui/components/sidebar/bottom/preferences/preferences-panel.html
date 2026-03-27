@@ -72,6 +72,29 @@
                 <span class="slider"></span>
               </label>
             </li>
+            <li x-data class="font-setting">
+              <span class="font-label">Font</span>
+              <select x-model="$store.preferences.fontFamily" @change="$store.preferences.fontFamily = $event.target.value" class="font-select">
+                <template x-for="opt in $store.preferences.fontFamilyOptions" :key="opt.value">
+                  <option :value="opt.value" x-text="opt.label"></option>
+                </template>
+              </select>
+            </li>
+            <li x-data class="font-size-setting">
+              <span class="font-size-label">Size</span>
+              <input type="range" min="12" max="20" step="1" 
+                     :value="$store.preferences.fontSize" 
+                     @input="$store.preferences.fontSize = $event.target.value"
+                     class="font-size-slider" />
+              <span class="font-size-value" x-text="$store.preferences.fontSize + 'px'"></span>
+            </li>
+            <li x-data class="font-color-setting">
+              <span class="font-color-label">Color</span>
+              <input type="color" 
+                     :value="$store.preferences.fontColor" 
+                     @input="$store.preferences.fontColor = $event.target.value"
+                     class="font-color-picker" />
+            </li>
           </ul>
         </span>
       </div>
@@ -204,6 +227,82 @@
       font-size: 0.6rem;
       margin: 0 0.1rem;
       opacity: 0.5;
+    }
+
+    /* Font customization styles */
+    .font-setting {
+      gap: 0.5rem;
+    }
+    .font-setting .font-label {
+      flex: 1;
+    }
+    .font-select {
+      background: var(--color-input);
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      color: var(--color-text);
+      font-size: 0.7rem;
+      padding: 0.2rem 0.4rem;
+      max-width: 120px;
+    }
+
+    .font-size-setting {
+      gap: 0.5rem;
+    }
+    .font-size-setting .font-size-label {
+      flex: 1;
+    }
+    .font-size-slider {
+      width: 60px;
+      height: 4px;
+      -webkit-appearance: none;
+      background: var(--color-border);
+      border-radius: 2px;
+      outline: none;
+    }
+    .font-size-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--color-primary);
+      cursor: pointer;
+    }
+    .font-size-slider::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--color-primary);
+      cursor: pointer;
+      border: none;
+    }
+    .font-size-value {
+      font-size: 0.65rem;
+      min-width: 28px;
+      text-align: right;
+    }
+
+    .font-color-setting {
+      gap: 0.5rem;
+    }
+    .font-color-setting .font-color-label {
+      flex: 1;
+    }
+    .font-color-picker {
+      width: 28px;
+      height: 20px;
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      padding: 0;
+      cursor: pointer;
+      background: transparent;
+    }
+    .font-color-picker::-webkit-color-swatch-wrapper {
+      padding: 2px;
+    }
+    .font-color-picker::-webkit-color-swatch {
+      border: none;
+      border-radius: 2px;
     }
   </style>
 </body>

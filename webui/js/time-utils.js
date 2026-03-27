@@ -89,3 +89,37 @@ export function formatDuration(durationMs) {
   const secs = totalSecs % 60;
   return `${mins}m${secs}s`;
 }
+
+/**
+ * Format a UTC ISO string to abbreviated day + date format
+ * @param {string} utcIsoString - UTC time in ISO format
+ * @param {boolean} use24Hour - Whether to use 24-hour format (default: true)
+ * @returns {string} Formatted date string (e.g., 'Mon - 01/15/2026 14:30')
+ */
+export function formatDateAbbreviated(utcIsoString, use24Hour = true) {
+  if (!utcIsoString) return '';
+
+  const date = new Date(utcIsoString);
+  
+  // Get day abbreviation
+  const dayFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'short' });
+  const dayAbbrev = dayFormatter.format(date);
+
+  // Format date as MM/DD/YYYY
+  const dateFormatter = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const dateStr = dateFormatter.format(date).replace(/\//g, '/');
+
+  // Format time
+  const timeFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: !use24Hour
+  });
+  const timeStr = timeFormatter.format(date);
+
+  return `${dayAbbrev} - ${dateStr} ${timeStr}`;
+}
