@@ -1,12 +1,12 @@
 allow_chat_override: true
 
 chat_model:
-  provider: "openrouter"
-  name: "anthropic/claude-sonnet-4.6"
-  api_base: ""
+  provider: "minimax"
+  name: "MiniMax/M2.7-highspeed"
+  api_base: "https://api.minimax.io/v1"
   ctx_length: 200000
   ctx_history: 0.7
-  vision: true
+  vision: false
   max_embeds: 10
   rl_requests: 0
   rl_input: 0
