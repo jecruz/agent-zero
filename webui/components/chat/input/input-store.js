@@ -7,21 +7,23 @@ import { store as chatsStore } from "/components/sidebar/chats/chats-store.js";
 
 const model = {
   paused: false,
-  canceled: false,
   message: "",
-  
-  // Prompt history for Up arrow cycling
-  promptHistory: [],
-  promptHistoryIndex: -1,
-  MAX_HISTORY: 10,
+  /** Composer + menu (bottom actions moved into dropdown) */
+  chatMoreMenuOpen: false,
+
+  toggleChatMoreMenu() {
+    this.chatMoreMenuOpen = !this.chatMoreMenuOpen;
+  },
+
+  closeChatMoreMenu() {
+    this.chatMoreMenuOpen = false;
+  },
 
   _getSendState() {
     const hasInput = this.message.trim() || attachmentsStore?.attachments?.length > 0;
     const hasQueue = !!messageQueueStore?.hasQueue;
     const running = !!chatsStore.selectedContext?.running;
 
-    if (this.paused) return "paused";
-    if (running) return "processing";
     if (hasQueue && !hasInput) return "all";
     if ((running || hasQueue) && hasInput) return "queue";
     return "normal";
@@ -30,16 +32,12 @@ const model = {
   get inputPlaceholder() {
     const state = this._getSendState();
     if (state === "all") return "Press Enter to send queued messages";
-    if (state === "processing") return "Processing...";
-    if (state === "paused") return "Paused - press Enter to resume";
     return "Type your message here...";
   },
 
   // Computed: send button icon type
   get sendButtonIcon() {
     const state = this._getSendState();
-    if (state === "paused") return "play_arrow";
-    if (state === "processing") return "pause";
     if (state === "all") return "send_and_archive";
     if (state === "queue") return "schedule_send";
     return "send";
@@ -48,8 +46,6 @@ const model = {
   // Computed: send button CSS class
   get sendButtonClass() {
     const state = this._getSendState();
-    if (state === "paused") return "send-paused";
-    if (state === "processing") return "send-processing";
     if (state === "all") return "send-queue send-all";
     if (state === "queue") return "send-queue queue";
     return "";
@@ -58,8 +54,6 @@ const model = {
   // Computed: send button title
   get sendButtonTitle() {
     const state = this._getSendState();
-    if (state === "paused") return "Resume Agent";
-    if (state === "processing") return "Pause Agent";
     if (state === "all") return "Send all queued messages";
     if (state === "queue") return "Add to queue";
     return "Send message";
@@ -67,7 +61,20 @@ const model = {
 
   init() {
     console.log("Input store initialized");
-    // Event listeners are now handled via Alpine directives in the component
+    // Add prompt history on send
+    const originalSend = this.sendMessage.bind(this);
+    this.sendMessage = async () => {
+      if (this.message.trim()) {
+        // Add to history (avoid duplicates at end)
+        const hist = this.promptHistory;
+        if (hist[hist.length - 1] !== this.message) {
+          hist.push(this.message);
+          if (hist.length > 50) hist.shift();
+        }
+        this.historyIndex = -1;
+      }
+      await originalSend();
+    };
   },
 
   async sendMessage() {
@@ -83,13 +90,14 @@ const model = {
       if (!this.message) chatInput.value = "";
       chatInput.style.height = "auto";
       chatInput.style.height = chatInput.scrollHeight + "px";
+      // pick up any layout shift triggered by the height assignment
+      chatInput.style.height = Math.max(chatInput.scrollHeight, parseInt(chatInput.style.height)) + "px";
     }
   },
 
   async pauseAgent(paused) {
     const prev = this.paused;
     this.paused = paused;
-    this.canceled = false;
     try {
       const context = globalThis.getContext?.();
       if (!globalThis.sendJsonData)
@@ -100,66 +108,6 @@ const model = {
       if (globalThis.toastFetchError) {
         globalThis.toastFetchError("Error pausing agent", e);
       }
-    }
-  },
-
-  async stopAgent() {
-    const prev = this.canceled;
-    this.canceled = true;
-    this.paused = false;
-    try {
-      const context = globalThis.getContext?.();
-      if (!globalThis.sendJsonData)
-        throw new Error("sendJsonData not available");
-      await globalThis.sendJsonData("/chat_stop", { context });
-    } catch (e) {
-      this.canceled = prev;
-      if (globalThis.toastFetchError) {
-        globalThis.toastFetchError("Error stopping agent", e);
-      }
-    }
-  },
-
-  // Add current message to prompt history
-  _addToHistory(message) {
-    if (!message?.trim()) return;
-    // Remove duplicate if exists
-    const idx = this.promptHistory.indexOf(message);
-    if (idx !== -1) {
-      this.promptHistory.splice(idx, 1);
-    }
-    // Add to beginning
-    this.promptHistory.unshift(message);
-    // Trim to max size
-    if (this.promptHistory.length > this.MAX_HISTORY) {
-      this.promptHistory.pop();
-    }
-    // Reset index to beginning (most recent)
-    this.promptHistoryIndex = 0;
-  },
-
-  // Cycle to previous prompt in history (Up arrow)
-  cycleHistoryUp() {
-    if (this.promptHistory.length === 0) return false;
-    if (this.promptHistoryIndex < this.promptHistory.length - 1) {
-      this.promptHistoryIndex++;
-      this.message = this.promptHistory[this.promptHistoryIndex];
-      return true;
-    }
-    return false;
-  },
-
-  // Cycle to next prompt in history (Down arrow)
-  cycleHistoryDown() {
-    if (this.promptHistory.length === 0) return false;
-    if (this.promptHistoryIndex > 0) {
-      this.promptHistoryIndex--;
-      this.message = this.promptHistory[this.promptHistoryIndex];
-      return true;
-    } else {
-      this.promptHistoryIndex = -1;
-      this.message = "";
-      return true;
     }
   },
 
@@ -174,11 +122,56 @@ const model = {
     }
   },
 
+  async stopAgent() {
+    try {
+      const context = globalThis.getContext?.();
+      if (!globalThis.sendJsonData)
+        throw new Error("sendJsonData not available");
+      await globalThis.sendJsonData("/chat_stop", { context });
+    } catch (e) {
+      if (globalThis.toastFetchError) {
+        globalThis.toastFetchError("Error stopping agent", e);
+      }
+    }
+  },
+
+  // Prompt history for cycling with arrow keys
+  promptHistory: [],
+  historyIndex: -1,
+
+  cycleHistoryUp() {
+    if (this.promptHistory.length === 0) return;
+    if (this.historyIndex === -1) {
+      this.historyIndex = this.promptHistory.length - 1;
+    } else if (this.historyIndex > 0) {
+      this.historyIndex--;
+    }
+    if (this.historyIndex >= 0 && this.historyIndex < this.promptHistory.length) {
+      this.message = this.promptHistory[this.historyIndex];
+      this.adjustTextareaHeight();
+    }
+  },
+
+  cycleHistoryDown() {
+    if (this.promptHistory.length === 0) return;
+    if (this.historyIndex !== -1) {
+      this.historyIndex++;
+      if (this.historyIndex >= this.promptHistory.length) {
+        this.historyIndex = -1;
+        this.message = "";
+      } else {
+        this.message = this.promptHistory[this.historyIndex];
+      }
+      this.adjustTextareaHeight();
+    }
+  },
+
   async loadKnowledge() {
     try {
-      const resp = await shortcuts.callJsonApi("/knowledge_path_get", {
-        ctxid: shortcuts.getCurrentContextId(),
-      });
+      const resp = await shortcuts.callJsonApi(
+        "/plugins/_memory/knowledge_path_get",
+        { ctxid: shortcuts.getCurrentContextId() }
+      );
       if (!resp.ok) throw new Error("Error getting knowledge path");
       const path = resp.path;
 
@@ -196,7 +189,7 @@ const model = {
       });
 
       // then reindex knowledge
-      await globalThis.sendJsonData("/knowledge_reindex", {
+      await globalThis.sendJsonData("/plugins/_memory/knowledge_reindex", {
         ctxid: shortcuts.getCurrentContextId(),
       });
 
@@ -267,13 +260,17 @@ const model = {
 
   async browseFiles(path) {
     if (!path) {
-      try {
-        const resp = await shortcuts.callJsonApi("/chat_files_path_get", {
-          ctxid: shortcuts.getCurrentContextId(),
-        });
-        if (resp.ok) path = resp.path;
-      } catch (_e) {
-        console.error("Error getting chat files path", _e);
+      const ctxid = shortcuts.getCurrentContextId();
+
+      if (ctxid) {
+        try {
+          const resp = await shortcuts.callJsonApi("/chat_files_path_get", {
+            ctxid,
+          });
+          if (resp.ok) path = resp.path;
+        } catch (_e) {
+          console.error("Error getting chat files path", _e);
+        }
       }
     }
     await fileBrowserStore.open(path);
@@ -281,9 +278,8 @@ const model = {
 
   reset() {
     this.message = "";
-    this.canceled = false;
-    this.promptHistoryIndex = -1;
     attachmentsStore.clearAttachments();
+    this.chatMoreMenuOpen = false;
     this.adjustTextareaHeight();
   }
 };
