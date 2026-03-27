@@ -73,16 +73,20 @@ const model = {
     const originalSend = this.sendMessage.bind(this);
     this.sendMessage = async () => {
       if (this.message.trim()) {
-        // Add to history (avoid duplicates at end)
-        const hist = this.promptHistory;
-        if (hist[hist.length - 1] !== this.message) {
-          hist.push(this.message);
-          if (hist.length > 50) hist.shift();
-        }
-        this.historyIndex = -1;
+        this._addToHistory(this.message);
       }
       await originalSend();
     };
+  },
+
+  _addToHistory(text) {
+    if (!text || !text.trim()) return;
+    const hist = this.promptHistory;
+    if (hist[hist.length - 1] !== text) {
+      hist.push(text);
+      if (hist.length > 50) hist.shift();
+    }
+    this.historyIndex = -1;
   },
 
   async sendMessage() {
