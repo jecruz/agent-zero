@@ -48,9 +48,9 @@
         </div>
 
         <div id="chat-buttons-wrapper">
-            <!-- Send button -->
+            <!-- Send/Pause/Resume button -->
             <button class="chat-button" id="send-button" aria-label="Send message"
-                    @click="$store.chatInput.sendMessage()"
+                    @click="if ($store.chatInput.paused) { $store.chatInput.pauseAgent(false); } else if ($store.chats.selectedContext?.running) { $store.chatInput.pauseAgent(true); } else { $store.chatInput.sendMessage(); }"
                     :class="$store.chatInput.sendButtonClass"
                     :title="$store.chatInput.sendButtonTitle">
                     <span class="material-symbols-outlined" x-text="$store.chatInput.sendButtonIcon"></span>
@@ -180,8 +180,12 @@
     .chat-button { border: none; border-radius: 50%; color: var(--color-background); cursor: pointer; font-size: var(--font-size-normal); height: 2.525rem; width: 2.525rem; margin: 0 0.18rem 0 0 var(--spacing-xs); display: -webkit-flex; display: flex; align-items: center; justify-content: center; flex-shrink: 0; flex-grow: 0; min-width: 2.525rem; -webkit-transition: background-color var(--transition-speed), box-shadow 0.12s ease-in-out, filter 0.12s ease-in-out; transition: background-color var(--transition-speed), box-shadow 0.12s ease-in-out, filter 0.12s ease-in-out; }
     #send-button { background-color: #4248f1; }
     #send-button.send-queue { background-color: #e67e22; }
+    #send-button.send-processing { background-color: #f39c12; }
+    #send-button.send-paused { background-color: #27ae60; }
     #send-button:hover { background-color: #353bc5; box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 6px 14px rgba(0,0,0,0.2); }
     #send-button.send-queue:hover { background-color: #d35400; }
+    #send-button.send-processing:hover { background-color: #d68910; }
+    #send-button.send-paused:hover { background-color: #219a52; }
     #send-button:active { background-color: #2b309c; filter: brightness(0.96); }
     .chat-button svg { width: 1.5rem; height: 1.5rem; }
     #send-button .material-symbols-outlined { font-size: 1.5rem; }

@@ -24,6 +24,8 @@ const model = {
     const hasQueue = !!messageQueueStore?.hasQueue;
     const running = !!chatsStore.selectedContext?.running;
 
+    // Check if agent is processing (running but not paused)
+    if (running && !this.paused) return "processing";
     if (hasQueue && !hasInput) return "all";
     if ((running || hasQueue) && hasInput) return "queue";
     return "normal";
@@ -38,6 +40,8 @@ const model = {
   // Computed: send button icon type
   get sendButtonIcon() {
     const state = this._getSendState();
+    if (this.paused) return "play_arrow";
+    if (state === "processing") return "pause";
     if (state === "all") return "send_and_archive";
     if (state === "queue") return "schedule_send";
     return "send";
@@ -46,6 +50,8 @@ const model = {
   // Computed: send button CSS class
   get sendButtonClass() {
     const state = this._getSendState();
+    if (this.paused) return "send-paused";
+    if (state === "processing") return "send-processing";
     if (state === "all") return "send-queue send-all";
     if (state === "queue") return "send-queue queue";
     return "";
@@ -54,6 +60,8 @@ const model = {
   // Computed: send button title
   get sendButtonTitle() {
     const state = this._getSendState();
+    if (this.paused) return "Resume agent";
+    if (state === "processing") return "Pause agent";
     if (state === "all") return "Send all queued messages";
     if (state === "queue") return "Add to queue";
     return "Send message";
