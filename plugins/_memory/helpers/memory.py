@@ -24,6 +24,7 @@ import numpy as np
 
 from helpers.print_style import PrintStyle
 from helpers import files, plugins, projects
+from helpers.safe_eval import safe_eval
 from langchain_core.documents import Document
 from . import knowledge_import
 from helpers.log import Log, LogItem
@@ -31,7 +32,6 @@ from enum import Enum
 from agent import Agent, AgentContext
 import models
 import logging
-from simpleeval import simple_eval
 
 
 # Raise the log level so WARNING messages aren't shown
@@ -437,7 +437,7 @@ class Memory:
     def _get_comparator(condition: str):
         def comparator(data: dict[str, Any]):
             try:
-                result = simple_eval(condition, names=data)
+                result = safe_eval(condition, names=data)
                 return result
             except Exception as e:
                 PrintStyle.error(f"Error evaluating condition: {e}")

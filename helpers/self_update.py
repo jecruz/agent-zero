@@ -99,7 +99,7 @@ def get_durable_self_update_manager_path() -> Path:
 def _load_yaml(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    loaded = yaml.loads(path.read_text(encoding="utf-8"))
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     return loaded if isinstance(loaded, dict) else None
 
 

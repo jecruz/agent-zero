@@ -1,4 +1,5 @@
 from typing import Any, List, Sequence
+from collections import OrderedDict
 from langchain_community.vectorstores import FAISS
 
 # faiss needs to be patched for python 3.12 on arm #TODO remove once not needed
@@ -13,10 +14,14 @@ from langchain_community.vectorstores.utils import (
     DistanceStrategy,
 )
 from langchain.embeddings import CacheBackedEmbeddings
-from simpleeval import simple_eval
 
 from agent import Agent
 from helpers import guids
+from helpers.safe_eval import safe_eval, get_comparator
+
+
+# Cache size limit to prevent unbounded memory growth
+MAX_EMBEDDINGS_CACHE_SIZE = 50
 
 
 class MyFaiss(FAISS):
@@ -34,7 +39,8 @@ class MyFaiss(FAISS):
 
 class VectorDB:
 
-    _cached_embeddings: dict[str, CacheBackedEmbeddings] = {}
+    # Use OrderedDict for LRU-style eviction
+    _cached_embeddings: OrderedDict[str, CacheBackedEmbeddings] = OrderedDict()
 
     @staticmethod
     def _get_embeddings(agent: Agent, cache: bool = True):
@@ -47,6 +53,10 @@ class VectorDB:
             "default",
         )
         if namespace not in VectorDB._cached_embeddings:
+            # Evict oldest entries if cache is full (LRU eviction)
+            while len(VectorDB._cached_embeddings) >= MAX_EMBEDDINGS_CACHE_SIZE:
+                VectorDB._cached_embeddings.popitem(last=False)  # Remove oldest (first) item
+            
             store = InMemoryByteStore()
             VectorDB._cached_embeddings[namespace] = (
                 CacheBackedEmbeddings.from_bytes_store(
@@ -55,6 +65,9 @@ class VectorDB:
                     namespace=namespace,
                 )
             )
+        
+        # Move to end (most recently used)
+        VectorDB._cached_embeddings.move_to_end(namespace)
         return VectorDB._cached_embeddings[namespace]
 
     def __init__(self, agent: Agent, cache: bool = True):
@@ -136,15 +149,3 @@ def cosine_normalizer(val: float) -> float:
         0, min(1, res)
     )  # float precision can cause values like 1.0000000596046448
     return res
-
-
-def get_comparator(condition: str):
-    def comparator(data: dict[str, Any]):
-        try:
-            result = simple_eval(condition, names=data)
-            return result
-        except Exception as e:
-            # PrintStyle.error(f"Error evaluating condition: {e}")
-            return False
-
-    return comparator

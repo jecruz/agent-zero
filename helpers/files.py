@@ -10,8 +10,8 @@ from typing import Any, Literal
 import zipfile
 import glob
 import mimetypes
-from simpleeval import simple_eval
 from helpers import yaml
+from helpers.safe_eval import safe_eval
 
 AGENTS_DIR = "agents"
 PLUGINS_DIR = "plugins"
@@ -191,7 +191,7 @@ def evaluate_text_conditions(_content: str, **kwargs):
         after = text[m.end() :]
 
         try:
-            result = simple_eval(condition, names=kwargs)
+            result = safe_eval(condition, names=kwargs)
         except Exception:
             # On evaluation error, do not modify this block
             return text
@@ -229,7 +229,7 @@ def read_file_yaml(relative_path: str, encoding="utf-8"):
     absolute_path = get_abs_path(relative_path)
 
     with open(absolute_path, "r", encoding=encoding) as f:
-        return yaml.loads(f.read())
+        return yaml.safe_load(f.read())
 
 def read_file_bin(relative_path: str):
     # Try to get the absolute path for the file from the original directory or backup directories
